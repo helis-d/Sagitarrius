@@ -8,9 +8,7 @@ use zeroize::Zeroize;
 pub fn run(name: String, length: usize, no_symbols: bool) -> Result<i32> {
     /// Upper bound to avoid accidental/OOM allocations (`vec![0u8; N]`).
     const MAX_GENERATED_SECRET_LEN: usize = 4096;
-    if name.is_empty() {
-        return Err(SagitarriusError::EmptySecretName);
-    }
+    crate::vault::validate_secret_name(&name)?;
     if length == 0 {
         return Err(SagitarriusError::Other(
             "generated secret length must be greater than 0".into(),

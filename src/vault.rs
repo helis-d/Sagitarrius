@@ -23,6 +23,15 @@ pub const MAX_SECRET_VALUE_LEN: usize = 1024 * 1024;
 pub const MAX_SECRET_NAME_LEN: usize = 256;
 pub const MAX_SECRETS: usize = 100_000;
 
+/// Hard bounds for attacker-controlled KDF parameters in the vault header.
+/// Checked **before** running Argon2: a tampered header claiming gigabytes
+/// of RAM or thousands of threads must fail fast instead of exhausting the
+/// machine and only then failing GCM authentication.
+/// Defaults (m=64MiB, t=3, p=4) sit comfortably inside these bounds.
+pub const MAX_KDF_M_COST: u32 = 256 * 1024; // KiB = 256 MiB
+pub const MAX_KDF_T_COST: u32 = 10;
+pub const MAX_KDF_P_COST: u32 = 8;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SecretEntry {
     pub value: String,
@@ -69,7 +78,8 @@ pub struct SecretInfo {
 pub struct AuditReport {
     pub total_secrets: usize,
     pub invalid_env_names: Vec<String>,
-    pub duplicate_values: Vec<(String, String)>,
+    /// One entry per shared value; each holds the 2+ names using it.
+    pub duplicate_groups: Vec<Vec<String>>,
     pub weak_secrets: Vec<String>,
 }
 
@@ -130,6 +140,10 @@ impl Vault {
         if file.header.kdf != "argon2id" {
             return Err(SagitarriusError::InvalidVaultFormat);
         }
+        // The header is attacker-controlled until GCM verifies it, and GCM
+        // verification happens only AFTER key derivation. Clamp KDF params
+        // first so a tampered header cannot force multi-GB Argon2 allocations.
+        validate_kdf_params(file.header.kdf_params)?;
 
         let salt = B64
             .decode(&file.header.salt)
@@ -179,6 +193,14 @@ impl Vault {
 
         let payload = payload_res?;
 
+        // The decrypted payload is also attacker-influenced (a foreign or
+        // hand-crafted vault). Enforce resource caps so a 10M-entry payload
+        // or a 1GB "value" cannot OOM the process. Deliberately lenient about
+        // name *content* here: vaults written by older versions may contain
+        // names that current write paths reject, and refusing to open them
+        // would lock users out of their own data.
+        validate_payload(&payload)?;
+
         let mut header = file.header;
         header.version = FORMAT_VERSION;
 
@@ -223,6 +245,11 @@ impl Vault {
     }
 
     pub fn set(&mut self, name: &str, value: &str) {
+        // Low-level setter: callers (add/edit/gen/import) validate first.
+        // The assert documents the invariant in debug builds without risking
+        // release-mode breakage on legacy data.
+        debug_assert!(validate_secret_name(name).is_ok());
+        debug_assert!(value.len() <= MAX_SECRET_VALUE_LEN);
         let now = current_timestamp();
         if let Some(entry) = self.payload.secrets.get_mut(name) {
             entry.value.zeroize();
@@ -348,14 +375,19 @@ impl Vault {
         (added, skipped)
     }
 
-    pub fn export_env(&self) -> String {
+    /// Exported `.env` text plus the names that were skipped because they
+    /// are not valid POSIX environment variable identifiers.
+    pub fn export_env(&self) -> (String, Vec<String>) {
         let mut out = String::new();
+        let mut skipped = Vec::new();
         for (k, entry) in &self.payload.secrets {
             if is_valid_env_name(k) {
                 out.push_str(&format!("{k}={}\n", escape_env_value(&entry.value)));
+            } else {
+                skipped.push(k.clone());
             }
         }
-        out
+        (out, skipped)
     }
 
     pub fn audit(&self) -> AuditReport {
@@ -383,15 +415,14 @@ impl Vault {
                 .push(name.as_str());
         }
 
+        // Grouped (O(n)), not pairwise (O(n²)): 10k identical values used to
+        // mean ~50M pairs and gigabytes of report. BTreeMap keeps output
+        // deterministic.
         for (_val, names) in seen_values {
             if names.len() > 1 {
-                for i in 0..names.len() {
-                    for j in (i + 1)..names.len() {
-                        report
-                            .duplicate_values
-                            .push((names[i].to_string(), names[j].to_string()));
-                    }
-                }
+                report
+                    .duplicate_groups
+                    .push(names.iter().map(|s| s.to_string()).collect());
             }
         }
 
@@ -430,6 +461,40 @@ pub(crate) fn validate_secret_name(name: &str) -> Result<()> {
         return Err(SagitarriusError::Other(format!(
             "invalid secret name {name:?}: must not contain '=', newlines or control characters"
         )));
+    }
+    Ok(())
+}
+
+/// Bounds-check KDF parameters from the (still unauthenticated) header.
+/// Must run before `derive_key`: Argon2 allocates per these numbers, so a
+/// tampered `m_cost` in the gigabytes would DoS the machine before GCM gets
+/// a chance to reject the forgery.
+fn validate_kdf_params(p: KdfParams) -> Result<()> {
+    // Lower bounds keep Argon2 itself from rejecting with a confusing error;
+    // the argon2 crate enforces m >= 8*p on top of this.
+    const MIN_M_COST: u32 = 8 * 1024;
+    if p.m_cost < MIN_M_COST
+        || p.m_cost > MAX_KDF_M_COST
+        || p.t_cost == 0
+        || p.t_cost > MAX_KDF_T_COST
+        || p.p_cost == 0
+        || p.p_cost > MAX_KDF_P_COST
+    {
+        return Err(SagitarriusError::InvalidVaultFormat);
+    }
+    Ok(())
+}
+
+/// Resource caps for a decrypted payload. Only sizes/counts — never name
+/// content, so vaults written by older versions always stay openable.
+fn validate_payload(payload: &Payload) -> Result<()> {
+    if payload.secrets.len() > MAX_SECRETS {
+        return Err(SagitarriusError::InvalidVaultFormat);
+    }
+    for (name, entry) in &payload.secrets {
+        if name.len() > MAX_SECRET_NAME_LEN || entry.value.len() > MAX_SECRET_VALUE_LEN {
+            return Err(SagitarriusError::InvalidVaultFormat);
+        }
     }
     Ok(())
 }
@@ -593,8 +658,9 @@ mod tests {
         assert_eq!(v.get("BAR"), Some("baz"));
         assert_eq!(v.get("QUX"), Some("val"));
 
-        let exported = v.export_env();
+        let (exported, skipped) = v.export_env();
         assert!(exported.contains("FOO=bar"));
+        assert!(skipped.is_empty());
     }
 
     #[test]
@@ -611,7 +677,10 @@ mod tests {
             .invalid_env_names
             .contains(&"invalid-name".to_string()));
         assert!(report.weak_secrets.contains(&"SHORT".to_string()));
-        assert_eq!(report.duplicate_values.len(), 1);
+        assert_eq!(report.duplicate_groups.len(), 1);
+        let mut group = report.duplicate_groups[0].clone();
+        group.sort();
+        assert_eq!(group, vec!["DUP1".to_string(), "DUP2".to_string()]);
     }
 
     #[test]
@@ -668,11 +737,65 @@ mod tests {
     fn export_quotes_special_values() {
         let mut v = Vault::create(PW).unwrap();
         v.set("SPACED", "hello world #hash=eq");
-        let out = v.export_env();
+        v.set("bad-name", "kept-in-vault");
+        let (out, skipped) = v.export_env();
         assert!(out.contains("SPACED=\"hello world #hash=eq\""));
+        assert!(!out.contains("bad-name"));
+        assert_eq!(skipped, vec!["bad-name".to_string()]);
         let mut v2 = Vault::create(PW).unwrap();
         let (added, _) = v2.import_env(&out, false);
         assert_eq!(added, 1);
         assert_eq!(v2.get("SPACED"), Some("hello world #hash=eq"));
+    }
+
+    #[test]
+    fn kdf_params_out_of_bounds_rejected() {
+        let v = Vault::create(PW).unwrap();
+        let bytes = v.serialize().unwrap();
+        let mut file: VaultFile = serde_json::from_slice(&bytes).unwrap();
+        // Absurd memory claim must fail fast, before any Argon2 allocation.
+        file.header.kdf_params.m_cost = 4 * 1024 * 1024;
+        let evil = serde_json::to_vec(&file).unwrap();
+        assert!(Vault::unlock(PW, &evil).is_err());
+        // Zero time cost / parallelism are equally invalid.
+        file.header.kdf_params.m_cost = 65536;
+        file.header.kdf_params.t_cost = 0;
+        let evil = serde_json::to_vec(&file).unwrap();
+        assert!(Vault::unlock(PW, &evil).is_err());
+        // Sane params still open.
+        assert!(Vault::unlock(PW, &bytes).is_ok());
+    }
+
+    #[test]
+    fn oversized_payload_rejected() {
+        // validate_payload is the unlock-time gate: oversized entries must
+        // fail closed. (Forging vault ciphertext in-test is unnecessary;
+        // the gate itself is what unlock() calls.)
+        let mut oversized = Payload::default();
+        oversized.secrets.insert(
+            "k".into(),
+            SecretEntry {
+                value: "x".repeat(MAX_SECRET_VALUE_LEN + 1),
+                created_at: 0,
+                updated_at: 0,
+            },
+        );
+        assert!(validate_payload(&oversized).is_err());
+
+        let mut too_many = Payload::default();
+        for i in 0..(MAX_SECRETS + 1) {
+            too_many.secrets.insert(
+                format!("k{i}"),
+                SecretEntry {
+                    value: "v".into(),
+                    created_at: 0,
+                    updated_at: 0,
+                },
+            );
+        }
+        assert!(validate_payload(&too_many).is_err());
+
+        let sane = Payload::default();
+        assert!(validate_payload(&sane).is_ok());
     }
 }

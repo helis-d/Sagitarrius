@@ -104,10 +104,15 @@ stale lock on some filesystems, in which case rerun the command.
 
 ## Failure modes
 
-- Wrong password, tampered ciphertext, tampered header, tampered nonce, or
-  truncated file: the command exits non-zero and prints
+- Wrong password, tampered ciphertext, tampered nonce, or truncated payload:
+  the command exits non-zero and prints
   `invalid master password or corrupted vault`. No partial plaintext is
   produced.
+- Tampered or malformed header (bad magic, unknown KDF id, bad base64,
+  out-of-range KDF params or salt/nonce lengths): the command exits non-zero
+  and prints `invalid vault format`. KDF params are bounds-checked *before*
+  Argon2 runs, so a forged header cannot force excessive memory allocation.
+- Vault from a future version: `unsupported vault version: N`.
 - Missing vault: `Sagitarrius has not been initialized. Run: sagitarrius init`.
 - The binary never panics on attacker-controlled input in normal operation.
 

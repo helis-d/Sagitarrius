@@ -48,15 +48,16 @@ pub fn run() -> Result<i32> {
         eprintln!();
     }
 
-    if !report.duplicate_values.is_empty() {
+    if !report.duplicate_groups.is_empty() {
+        let affected: usize = report.duplicate_groups.iter().map(Vec::len).sum();
         eprintln!(
-            "⚠️  Duplicate Secret Values Found ({} pair(s)):",
-            report.duplicate_values.len()
+            "⚠️  Duplicate Secret Values Found ({} group(s), {affected} secret(s)):",
+            report.duplicate_groups.len()
         );
-        for (a, b) in &report.duplicate_values {
-            eprintln!("  - {a} and {b} share the exact same secret value");
+        for group in &report.duplicate_groups {
+            eprintln!("  - {} share the exact same secret value", group.join(", "));
         }
-        issues += report.duplicate_values.len();
+        issues += report.duplicate_groups.len();
         eprintln!();
     }
 

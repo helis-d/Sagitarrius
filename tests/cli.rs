@@ -395,3 +395,37 @@ fn menu_subcommand_shows_launch_menu() {
         .success()
         .stdout(predicate::str::contains("S A G I T A R R I U S"));
 }
+
+#[test]
+fn gen_rejects_invalid_names_like_add() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    // `=` / newlines in names are rejected on every write path.
+    cmd(&dir)
+        .args(["gen", "A=B", "--length", "16"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid secret name"));
+    cmd(&dir).args(["exists", "A=B"]).assert().code(1);
+}
+
+#[test]
+fn export_warns_about_skipped_names() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir)
+        .args(["add", "odd-name", "value12345"])
+        .assert()
+        .success();
+    cmd(&dir)
+        .args(["add", "FINE", "value12345"])
+        .assert()
+        .success();
+
+    let out = cmd(&dir).args(["export"]).assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stdout.contains("FINE=value12345"));
+    assert!(!stdout.contains("odd-name"));
+    assert!(stderr.contains("odd-name"));
+}

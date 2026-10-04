@@ -21,7 +21,7 @@ pub fn run(path: Option<String>) -> Result<i32> {
     password.zeroize();
     data.zeroize();
 
-    let mut env_output = vault.export_env();
+    let (mut env_output, skipped) = vault.export_env();
 
     match path {
         Some(file_path) => {
@@ -30,11 +30,25 @@ pub fn run(path: Option<String>) -> Result<i32> {
             // existing files that may have looser permissions.
             write_plaintext_file(&file_path, env_output.as_bytes())?;
             env_output.zeroize();
+            if !skipped.is_empty() {
+                eprintln!(
+                    "Warning: skipped {} secret(s) with invalid env names: {}",
+                    skipped.len(),
+                    skipped.join(", ")
+                );
+            }
             eprintln!("Secrets exported to {file_path:?} in .env format.");
         }
         None => {
             print!("{env_output}");
             env_output.zeroize();
+            if !skipped.is_empty() {
+                eprintln!(
+                    "Warning: skipped {} secret(s) with invalid env names: {}",
+                    skipped.len(),
+                    skipped.join(", ")
+                );
+            }
         }
     }
 
