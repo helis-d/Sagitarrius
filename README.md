@@ -1,6 +1,6 @@
 # Sagitarrius
 
-<img src="assets/sagitarrius-logo.svg" width="120" alt="Sagitarrius logo">
+![Sagitarrius banner](assets/sagitarrius-banner.jpg)
 
 **Your secrets. Your machine. Your terminal.**
 
