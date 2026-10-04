@@ -4,6 +4,8 @@
 
 **Your secrets. Your machine. Your terminal.**
 
+**Web Site = https://sagitarrius.vercel.app/**
+
 A tiny, local-first CLI secret manager for developers. No account, no cloud,
 no network, no telemetry — one encrypted file on your own disk.
 
