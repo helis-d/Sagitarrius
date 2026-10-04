@@ -61,7 +61,7 @@ characters. Values must not be empty (whitespace-only counts as empty).
 |---|---|
 | `migrate` | Upgrade a v2 vault to v3 (snapshots first, verifies after). No-op on v3. |
 | `snapshot create/list/verify/delete` + `restore <id>` | Encrypted local history. Restores verify first, snapshot the present, then replace. |
-| `backup create [--to DIR]/list/verify/restore/prune` | Same format aimed at offline media. `--to` writes anywhere; `list/verify` cover local backups. |
+| `backup create [--to DIR]/list/verify/restore/prune` | Same format aimed at offline media. `--to` writes anywhere; `list` covers local backups, `verify`/`restore` accept `--from DIR`. |
 | `recovery create/verify/reset-password` | Recovery code kit for a lost master password (v3 only). |
 | `file put <path> [--name N]` / `file get <name> <dest>` | Encrypted files (64 KiB chunks, hash-verified). Removed with `remove`. |
 | `status` | Passwordless health lines: format, trusted generation, recovery, snapshots, backups, lockdown. |

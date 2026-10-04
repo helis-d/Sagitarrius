@@ -278,3 +278,49 @@ fn no_leftover_temp_files_after_mutation() {
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
 }
+
+#[cfg(unix)]
+#[test]
+fn export_through_symlink_is_refused() {
+    use std::os::unix::fs::symlink;
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    let target = dir.path().join("real.env");
+    let link = dir.path().join("link.env");
+    symlink(&target, &link).unwrap();
+
+    let out = cmd(&dir)
+        .args(["export", "--plaintext", link.to_str().unwrap()])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("symlink"));
+    // The link target was never created or touched.
+    assert!(!target.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn file_get_through_symlink_is_refused() {
+    use std::os::unix::fs::symlink;
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    // Store a file, then point the destination at a symlink.
+    let src = dir.path().join("src.bin");
+    fs::write(&src, b"secret-bytes").unwrap();
+    cmd(&dir)
+        .args(["file", "put", src.to_str().unwrap(), "--name", "F"])
+        .assert()
+        .success();
+    let target = dir.path().join("real.bin");
+    let link = dir.path().join("link.bin");
+    symlink(&target, &link).unwrap();
+
+    let out = cmd(&dir)
+        .args(["file", "get", "F", link.to_str().unwrap()])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("symlink"));
+    assert!(!target.exists());
+}

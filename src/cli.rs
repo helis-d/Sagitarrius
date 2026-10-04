@@ -219,11 +219,17 @@ pub enum BackupAction {
     Verify {
         /// Backup id (verifies all when omitted)
         id: Option<String>,
+        /// Verify in an external directory instead of the local backup dir
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Restore the vault from a backup (updates trusted state)
     Restore {
         /// Backup id
         id: String,
+        /// Restore from an external directory instead of the local backup dir
+        #[arg(long)]
+        from: Option<String>,
     },
     /// Delete backups, keeping the newest N (`--keep 0` deletes all)
     Prune {

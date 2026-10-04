@@ -66,8 +66,8 @@ pub fn dispatch(cmd: Commands) -> Result<i32> {
         Commands::Backup { action } => match action {
             BackupAction::Create { to } => backup::create(to),
             BackupAction::List => backup::list(),
-            BackupAction::Verify { id } => backup::verify(id),
-            BackupAction::Restore { id } => backup::restore(id),
+            BackupAction::Verify { id, from } => backup::verify(id, from),
+            BackupAction::Restore { id, from } => backup::restore(id, from),
             BackupAction::Prune { keep } => backup::prune(keep),
         },
         Commands::Recovery { action } => match action {

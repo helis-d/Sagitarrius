@@ -14,7 +14,7 @@ sagitarrius init
 sagitarrius add OPENAI_API_KEY
 sagitarrius list
 sagitarrius get OPENAI_API_KEY
-sagitarrius run -- cargo test
+sagitarrius run --secret OPENAI_API_KEY -- cargo test
 ```
 
 ## Install
@@ -68,10 +68,10 @@ Full reference: [docs/commands.md](docs/commands.md).
 
 - Vault lives at `%APPDATA%\sagitarrius\data\vault.json` on Windows
   ([all platforms](docs/vault-and-crypto.md)); encrypted with
-  Argon2id + AES-256-GCM.
+  Argon2id + AES-256-GCM behind a random master key (v3).
 - Protects a **stolen vault file**. Does **not** protect a compromised
-  machine, a weak master password, or shell-history leaks — and there is
-  **no password recovery**.
+  machine, a weak master password, or shell-history leaks — and without a
+  recovery kit (`recovery create`) there is **no password recovery**.
 - Full model: [SECURITY.md](SECURITY.md) · details:
   [docs/vault-and-crypto.md](docs/vault-and-crypto.md).
 

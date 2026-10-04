@@ -48,14 +48,14 @@ pub fn run() -> Result<i32> {
                 .into(),
         );
     }
-    match crate::commands::snapshot::list_entries(&storage::snapshots_dir()?) {
+    match crate::archive::list_archives(&storage::snapshots_dir()?) {
         Ok(list) if list.is_empty() => report
             .notices
             .push("no snapshots: `snapshot create` before big changes".into()),
         Err(_) => report.notices.push("snapshot directory unreadable".into()),
         _ => {}
     }
-    match crate::commands::snapshot::list_entries(&storage::backups_dir()?) {
+    match crate::archive::list_archives(&storage::backups_dir()?) {
         Ok(list) if list.is_empty() => report.notices.push(
             "no local backups: `backup create --to <offline-dir>` for ransomware resilience".into(),
         ),
@@ -122,6 +122,31 @@ pub fn run() -> Result<i32> {
         }
         eprintln!();
     }
+
+    // File-container consistency: every File record must resolve to a live,
+    // verifiable container. Counts as a real issue (data loss), never prints
+    // values.
+    let mut file_issues = 0;
+    for name in vault.names() {
+        if let Some(crate::vault_v3::RecordPayload::File { file_id, .. }) = vault.get_payload(name)
+        {
+            let live = storage::files_dir()
+                .map(|d| d.join(&file_id))
+                .map(|p| p.join("manifest.json").exists())
+                .unwrap_or(false);
+            if !live {
+                eprintln!(
+                    "⚠️  Missing file container for {} (record points nowhere)",
+                    crate::vault::escape_name(name)
+                );
+                file_issues += 1;
+            }
+        }
+    }
+    if file_issues > 0 {
+        eprintln!();
+    }
+    issues += file_issues;
 
     if issues == 0 {
         eprintln!("✅ No issues found by these checks (short values, duplicates, names only).");

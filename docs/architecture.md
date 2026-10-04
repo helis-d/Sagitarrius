@@ -66,9 +66,9 @@ chunks or reordered chunks all fail closed.
 |---|---|---|
 | `vault.json` | encrypted vault | ciphertext only |
 | `state.json` | `{vault_id, generation}` anti-rollback reference | no |
-| `snapshots/<id>.json` + `.meta.json` | encrypted copies + manifest | ciphertext only |
-| `backups/` | same layout, local or `--to` external | ciphertext only |
-| `files/<id>/` | chunked containers | ciphertext only |
+| `snapshots/<id>/` | complete container: manifest + vault + file containers | ciphertext only |
+| `backups/<id>/` | same layout, local or `--to` external | ciphertext only |
+| `files/<id>/` | chunked containers (64 KiB, streaming) | ciphertext only |
 | `lockdown` | flag file | no |
 
 ## What the code deliberately does NOT do

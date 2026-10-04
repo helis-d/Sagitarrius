@@ -1,6 +1,25 @@
 # Changelog
 
-## 0.2.0 — vault v3: VMK envelope + resilience
+## 0.2.1 — hardening patch (no format break)
+
+- Fixed: `migrate` wiped the password before re-opening the migrated
+  vault, failing every real v2→v3 migration. Password lifetime corrected
+  (verify with the original, zeroize after) + real CLI migration test from
+  a committed v2 fixture.
+- Fixed: streaming `file put` truncated inputs at 64 KiB
+  (`Vec::zeroize()` clears length — reused I/O buffers are arrays now).
+- Snapshots/backups are complete containers: manifest + vault + every
+  referenced file container, with cross-reference verification. Missing or
+  corrupt containers fail closed; restores re-verify live state.
+- `backup verify/restore --from DIR` for external/offline copies.
+- True streaming file encryption (bounded memory), staged container
+  install, symlink refusal, extra-file rejection, strict id checks.
+- Lockdown scope pinned: decrypting/mutating commands refused (incl.
+  snapshot delete, backup prune); `status/list/search/exists` stay.
+- `audit` reports missing file containers; KDF/recovery/backup notices.
+- Hostile-input, lockdown, disaster-recovery and ransomware-simulation
+  integration tests.
+- OS keystore wrapping explicitly deferred (documented, no fake claims).
 
 - New vault format v3: random VMK, Argon2id password/recovery wraps,
   per-record AES-GCM keys via HKDF, typed records

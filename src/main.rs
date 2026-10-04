@@ -1,3 +1,4 @@
+mod archive;
 mod banner;
 mod cli;
 mod commands;

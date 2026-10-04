@@ -11,6 +11,10 @@
 - `cargo fmt --check`
 - CI (`.github/workflows/ci.yml`): fmt + clippy + full tests on
   Ubuntu/Windows/macOS, plus `cargo audit` for RustSec advisories.
+  `cargo deny` was evaluated and deferred: with ~15 dependencies, all
+  MIT/Apache-2.0, `cargo audit` already covers the advisory feed; deny's
+  license/ban policies add process without signal at this size.
+  Re-evaluate when the tree grows or copyleft code appears.
 
 ## Attacker-controlled surfaces (review checklist)
 

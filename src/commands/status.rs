@@ -56,8 +56,8 @@ pub fn run() -> Result<i32> {
         "UNAVAILABLE (v2 format — run `migrate`)".to_string()
     };
 
-    let snapshots = crate::commands::snapshot::list_entries(&storage::snapshots_dir()?)?;
-    let backups = crate::commands::snapshot::list_entries(&storage::backups_dir()?)?;
+    let snapshots = crate::archive::list_archives(&storage::snapshots_dir()?)?;
+    let backups = crate::archive::list_archives(&storage::backups_dir()?)?;
     let snap_line = match snapshots.iter().max_by_key(|m| m.created_at) {
         Some(m) => format!(
             "{} present, latest {} ({})",

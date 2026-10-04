@@ -91,7 +91,17 @@ Full statement: [docs/threat-model.md](docs/threat-model.md).
 
 Updates are written to a fresh temp file in the same directory, `chmod`ed
 and `fsync`ed before being `rename`d over the destination. A crash at any
-point leaves either the old or the new vault intact. No backups are kept.
+point leaves either the old or the new vault intact. Crash safety is not
+backup: snapshots (`snapshot create`) and offline backups
+(`backup create --to <dir>`) are separate, explicit operations.
+
+## Lockdown
+
+`lockdown` writes a flag file that makes every decrypting or mutating
+command fail closed; only `status`, `list`, `search`, `exists` and `menu`
+keep working until `lockdown --off`. It stops the CLI (own mistakes,
+malware driving the CLI) — anyone with raw filesystem access can remove
+the flag, so it is not an OS-level boundary and is documented as such.
 
 ## Concurrency
 
@@ -106,10 +116,11 @@ stale lock on some filesystems, in which case rerun the command.
 - `sagitarrius add <name> "<value>"` places the value in `argv`, which is
   visible to `ps` and may be recorded in shell history. **Prefer
   interactive input.**
-- `sagitarrius run -- <cmd>` exports every valid-named secret into the
-  child's environment. Any process that can read the child's environment
-  can read every secret. This is the intended behaviour but is a real
-  disclosure surface.
+- `sagitarrius run --secret A --secret B -- <cmd>` exports only the named
+  secrets into the child's environment. Any process that can read the
+  child's environment can read those secrets — that scoping is the whole
+  point, but the residual surface is real. Without `--secret` the command
+  refuses rather than exposing the vault.
 - `sagitarrius get <name>` prints the value to stdout. Redirect carefully,
   avoid screen sharing, and remember that shell redirections and pipelines
   can copy the value elsewhere.

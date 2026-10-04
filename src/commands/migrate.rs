@@ -18,7 +18,7 @@ use zeroize::Zeroize;
 pub fn run() -> Result<i32> {
     crate::storage::ensure_unlocked()?;
     let _lock = VaultLock::acquire()?;
-    let data = storage::read_vault()?;
+    let mut data = storage::read_vault()?;
 
     let mut password = input::master_password("Master password: ")?;
     let vault = match Vault::unlock(&password, &data) {
@@ -39,14 +39,41 @@ pub fn run() -> Result<i32> {
     }
 
     // Safety net first: the old vault stays recoverable whatever happens.
-    let pre = crate::commands::snapshot::store_copy(&storage::snapshots_dir()?, "pre-migrate")?;
+    let pre =
+        crate::archive::create_archive(&storage::snapshots_dir()?, "snapshot", "pre-migrate")?;
 
-    let migrated = crate::vault::migrate_v2_to_v3(&password, &data)?;
-    password.zeroize();
-    storage::write_vault_atomic(&migrated)?;
+    let migrated = match crate::vault::migrate_v2_to_v3(&password, &data) {
+        Ok(m) => m,
+        Err(e) => {
+            password.zeroize();
+            data.zeroize();
+            return Err(e);
+        }
+    };
+    data.zeroize();
+    // Ciphertext no longer needed; the live password is still required below
+    // for the post-write verification, so it must NOT be wiped yet.
+    // (A previous revision zeroized here and re-opened with an empty
+    // password, failing every real migration.)
+    if let Err(e) = storage::write_vault_atomic(&migrated) {
+        password.zeroize();
+        return Err(e);
+    }
 
-    let live = storage::read_vault()?;
-    let vault = Vault::unlock(&password, &live)?;
+    let live = match storage::read_vault() {
+        Ok(l) => l,
+        Err(e) => {
+            password.zeroize();
+            return Err(e);
+        }
+    };
+    let vault = match Vault::unlock(&password, &live) {
+        Ok(v) => v,
+        Err(e) => {
+            password.zeroize();
+            return Err(e);
+        }
+    };
     password.zeroize();
     if !vault.is_v3() {
         return Err(SagitarriusError::Other(

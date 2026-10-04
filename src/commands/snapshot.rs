@@ -1,177 +1,134 @@
-//! Encrypted snapshots: versioned local history of the vault file.
+//! Encrypted snapshots: fast local history of the complete vault state.
 //!
-//! A snapshot is a byte copy of `vault.json` (still encrypted) plus a JSON
-//! manifest. Copies never decrypt anything, so `create`/`list` need no
-//! password; `verify`/`restore` do. Every restore first snapshots the current
-//! vault, so a bad restore is itself recoverable.
+//! Snapshots use the shared [`crate::archive`] container
+//! (`<id>/{manifest.json, vault.json, files/...}`), so a snapshot always
+//! carries every file container — a File record can never survive while its
+//! bytes are lost. Creation needs no password (everything copied is already
+//! ciphertext); `verify`/`restore` do.
+//!
+//! Pre-v3-layout snapshots (`<id>.json` + `<id>.meta.json`, vault bytes
+//! only) are still listed, verified and restored — labeled legacy — but new
+//! snapshots always use the complete layout.
 
+use crate::archive;
 use crate::error::{Result, SagitarriusError};
 use crate::input;
 use crate::storage;
 use crate::vault::Vault;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
+/// Legacy manifest (vault-bytes-only layout, pre-container-format).
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Manifest {
-    pub id: String,
-    pub vault_id: String,
-    pub generation: u64,
-    pub format_version: u32,
-    pub created_at: u64,
-    pub sha256: String, // of the snapshot bytes
-    pub verified: bool,
+struct LegacyManifest {
+    id: String,
+    vault_id: String,
+    generation: u64,
+    format_version: u32,
+    created_at: u64,
+    sha256: String,
+    verified: bool,
 }
 
-pub fn new_id(prefix: &str) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut r = [0u8; 3];
-    rand::thread_rng().fill_bytes(&mut r);
-    format!(
-        "{prefix}-{now}-{r:02x}{r2:02x}{r3:02x}",
-        r = r[0],
-        r2 = r[1],
-        r3 = r[2]
-    )
-}
-
-fn sha_hex(data: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(data);
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn meta_path(dir: &Path, id: &str) -> PathBuf {
-    dir.join(format!("{id}.meta.json"))
-}
-
-fn data_path(dir: &Path, id: &str) -> PathBuf {
+fn legacy_data(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
     dir.join(format!("{id}.json"))
 }
 
-fn check_id(id: &str) -> Result<()> {
-    if id.is_empty()
-        || id.len() > 128
-        || !id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err(SagitarriusError::Other("invalid snapshot id".into()));
-    }
-    Ok(())
+fn legacy_meta(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    dir.join(format!("{id}.meta.json"))
 }
 
-/// Describe the current vault file without decrypting it.
-fn describe_current() -> Result<(Vec<u8>, String, u64, u32)> {
-    let bytes = storage::read_vault()?;
-    let v: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| SagitarriusError::InvalidVaultFormat)?;
-    let h = &v["header"];
-    let vault_id = h["vault_id"].as_str().unwrap_or("v2-legacy").to_string();
-    let generation = h["generation"].as_u64().unwrap_or(0);
-    let version = h["version"].as_u64().unwrap_or(0) as u32;
-    Ok((bytes, vault_id, generation, version))
+fn has_legacy(dir: &std::path::Path, id: &str) -> bool {
+    legacy_data(dir, id).exists() && legacy_meta(dir, id).exists()
 }
 
-/// Store an encrypted copy + manifest into `dir`. Returns the snapshot id.
-pub(crate) fn store_copy(dir: &Path, prefix: &str) -> Result<String> {
-    std::fs::create_dir_all(dir)?;
-    let (bytes, vault_id, generation, version) = describe_current()?;
-    let id = new_id(prefix);
-    storage::write_file_atomic(&data_path(dir, &id), &bytes)?;
-    let manifest = Manifest {
-        id: id.clone(),
-        vault_id,
-        generation,
-        format_version: version,
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-        sha256: sha_hex(&bytes),
-        verified: false,
-    };
-    let mbytes = serde_json::to_vec_pretty(&manifest)?;
-    storage::write_file_atomic(&meta_path(dir, &id), &mbytes)?;
-    Ok(id)
-}
-
-pub(crate) fn read_manifest(dir: &Path, id: &str) -> Result<Manifest> {
-    check_id(id)?;
-    let raw = std::fs::read(meta_path(dir, id))?;
-    serde_json::from_slice(&raw).map_err(|_| SagitarriusError::InvalidVaultFormat)
-}
-
-pub(crate) fn list_entries(dir: &Path) -> Result<Vec<Manifest>> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let mut out = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if let Some(id) = name.strip_suffix(".meta.json") {
-            if let Ok(m) = read_manifest(dir, id) {
-                out.push(m);
-            }
-        }
-    }
-    out.sort_by_key(|m| (m.created_at, m.id.clone()));
-    Ok(out)
-}
-
-/// Verify bytes against their manifest (hash + openability with password).
-fn verify_bytes(id: &str, bytes: &[u8], manifest: &Manifest, password: &str) -> Result<()> {
-    if sha_hex(bytes) != manifest.sha256 {
-        return Err(SagitarriusError::Other(format!(
-            "snapshot {id}: sha256 mismatch — file corrupted or replaced"
-        )));
-    }
-    // Full unlock proves the copy is a usable vault, not just intact bytes.
-    let vault = Vault::unlock(password, bytes)?;
-    // Cross-check identity: a manifest swapped onto foreign bytes must fail.
-    if vault.vault_id() != manifest.vault_id && manifest.vault_id != "v2-legacy" {
-        return Err(SagitarriusError::Other(format!(
-            "snapshot {id}: vault id mismatch — manifest does not belong to these bytes"
-        )));
-    }
-    let _ = vault;
-    Ok(())
+fn has_archive(dir: &std::path::Path, id: &str) -> bool {
+    dir.join(id).join("manifest.json").exists()
 }
 
 pub fn create() -> Result<i32> {
     crate::storage::ensure_unlocked()?;
     let dir = storage::snapshots_dir()?;
-    let id = store_copy(&dir, "snap")?;
-    eprintln!("Snapshot {id} recorded (encrypted; verify with `snapshot verify {id}`).");
+    let id = archive::create_archive(&dir, "snapshot", "snap")?;
+    eprintln!("Snapshot {id} recorded (complete: vault + file containers; verify with `snapshot verify {id}`).");
     Ok(0)
 }
 
 pub fn list() -> Result<i32> {
     let dir = storage::snapshots_dir()?;
-    let entries = list_entries(&dir)?;
-    if entries.is_empty() {
+    struct Row {
+        id: String,
+        gen: String,
+        created: u64,
+        state: String,
+    }
+    let mut rows: Vec<Row> = archive::list_archives(&dir)?
+        .iter()
+        .map(|m| Row {
+            id: m.id.clone(),
+            gen: m.generation.to_string(),
+            created: m.created_at,
+            state: if m.verified {
+                "verified".into()
+            } else {
+                "unverified".into()
+            },
+        })
+        .collect();
+    if dir.exists() {
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(id) = name.strip_suffix(".meta.json") {
+                if has_archive(&dir, id) {
+                    continue;
+                }
+                if let Ok(raw) = std::fs::read(legacy_meta(&dir, id)) {
+                    if let Ok(m) = serde_json::from_slice::<LegacyManifest>(&raw) {
+                        rows.push(Row {
+                            id: m.id,
+                            gen: m.generation.to_string(),
+                            created: m.created_at,
+                            state: "legacy vault-only".into(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    if rows.is_empty() {
         eprintln!("No snapshots. Create one with `sagitarrius snapshot create`.");
         return Ok(0);
     }
-    for m in entries {
-        println!(
-            "{}  gen={} vault={} v{} {} {}",
-            m.id,
-            m.generation,
-            &m.vault_id[..m.vault_id.len().min(12)],
-            m.format_version,
-            m.created_at,
-            if m.verified { "verified" } else { "unverified" }
-        );
+    rows.sort_by_key(|r| (r.created, r.id.clone()));
+    for r in rows {
+        println!("{}  gen={} {} {}", r.id, r.gen, r.created, r.state);
     }
     Ok(0)
+}
+
+fn verify_legacy(dir: &std::path::Path, id: &str, password: &str) -> Result<()> {
+    let raw = std::fs::read(legacy_meta(dir, id))?;
+    let m: LegacyManifest =
+        serde_json::from_slice(&raw).map_err(|_| SagitarriusError::InvalidVaultFormat)?;
+    let bytes = std::fs::read(legacy_data(dir, id))?;
+    let mut h = sha2::Sha256::new();
+    use sha2::Digest;
+    h.update(&bytes);
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    if hex != m.sha256 {
+        return Err(SagitarriusError::Other(format!(
+            "snapshot {id}: sha256 mismatch"
+        )));
+    }
+    let vault = Vault::unlock(password, &bytes)?;
+    if vault.vault_id() != m.vault_id && m.vault_id != "v2-legacy" {
+        return Err(SagitarriusError::Other(format!(
+            "snapshot {id}: vault id mismatch"
+        )));
+    }
+    eprintln!("note: {id} is a legacy vault-only snapshot (no file containers covered)");
+    Ok(())
 }
 
 pub fn verify(id: Option<String>) -> Result<i32> {
@@ -179,27 +136,39 @@ pub fn verify(id: Option<String>) -> Result<i32> {
     let dir = storage::snapshots_dir()?;
     let ids: Vec<String> = match id {
         Some(id) => vec![id],
-        None => list_entries(&dir)?.iter().map(|m| m.id.clone()).collect(),
+        None => archive::list_archives(&dir)?
+            .iter()
+            .map(|m| m.id.clone())
+            .collect(),
     };
+    // Legacy ids verify too when explicitly named.
     if ids.is_empty() {
         eprintln!("No snapshots to verify.");
         return Ok(0);
     }
     let mut password = input::master_password("Master password: ")?;
     let mut failed = 0;
-    for id in ids {
-        let manifest = read_manifest(&dir, &id)?;
-        let bytes = std::fs::read(data_path(&dir, &id))?;
-        match verify_bytes(&id, &bytes, &manifest, &password) {
-            Ok(()) => {
-                eprintln!("Snapshot {id}: OK");
-                // Mark verified in the manifest (best effort).
-                let mut m = manifest;
-                m.verified = true;
-                if let Ok(mbytes) = serde_json::to_vec_pretty(&m) {
-                    let _ = storage::write_file_atomic(&meta_path(&dir, &id), &mbytes);
+    for id in &ids {
+        let res = if has_archive(&dir, id) {
+            match archive::verify_archive(&dir, id, &password) {
+                Ok(m) => {
+                    // Mark verified (best effort).
+                    let mut m = m;
+                    m.verified = true;
+                    if let Ok(b) = serde_json::to_vec_pretty(&m) {
+                        let _ = storage::write_file_atomic(&dir.join(id).join("manifest.json"), &b);
+                    }
+                    Ok(())
                 }
+                Err(e) => Err(e),
             }
+        } else if has_legacy(&dir, id) {
+            verify_legacy(&dir, id, &password)
+        } else {
+            Err(SagitarriusError::Other(format!("snapshot {id} not found")))
+        };
+        match res {
+            Ok(()) => eprintln!("Snapshot {id}: OK"),
             Err(e) => {
                 eprintln!("Snapshot {id}: FAILED ({e})");
                 failed += 1;
@@ -212,39 +181,88 @@ pub fn verify(id: Option<String>) -> Result<i32> {
 
 pub fn restore(id: String) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
+    archive::check_id(&id)?;
     let dir = storage::snapshots_dir()?;
-    let manifest = read_manifest(&dir, &id)?;
-    let bytes = std::fs::read(data_path(&dir, &id))?;
-
     // The snapshot may predate a `passwd`: ask for the password that opens
     // *it*, not necessarily today's.
     let mut password =
         input::master_password("Master password for this snapshot (possibly an older one): ")?;
-    // The copy must open BEFORE it touches the live vault.
-    verify_bytes(&id, &bytes, &manifest, &password)?;
 
-    // Safety net: snapshot the present first.
-    let _lock = storage::VaultLock::acquire()?;
-    let pre = store_copy(&dir, "pre-restore")?;
-    storage::write_vault_atomic(&bytes)?;
-
-    // Adopt the restored generation as trusted, then re-verify live.
-    let live = storage::read_vault()?;
-    let vault = Vault::unlock(&password, &live)?;
+    if has_archive(&dir, &id) {
+        let manifest = archive::read_manifest(&dir, &id)?;
+        archive::verify_archive(&dir, &id, &password)?;
+        let _lock = storage::VaultLock::acquire()?;
+        let pre = archive::try_preserve_current()?;
+        archive::install_archive(&dir, &manifest)?;
+        let live = storage::read_vault()?;
+        let vault = Vault::unlock(&password, &live)?;
+        password.zeroize();
+        // Post-install proof: references AND containers of the live state.
+        verify_live_complete(&vault)?;
+        crate::state::store_generation(&vault)?;
+        eprintln!(
+            "Restored snapshot {id} (gen {}).{}",
+            manifest.generation,
+            match &pre {
+                Some(p) => format!(" Pre-restore state kept as {p}."),
+                None => String::new(),
+            }
+        );
+        return Ok(0);
+    }
+    if has_legacy(&dir, &id) {
+        verify_legacy(&dir, &id, &password)?;
+        let _lock = storage::VaultLock::acquire()?;
+        let pre = archive::create_archive(&dir, "snapshot", "pre-restore")?;
+        let bytes = std::fs::read(legacy_data(&dir, &id))?;
+        storage::write_vault_atomic(&bytes)?;
+        let live = storage::read_vault()?;
+        let vault = Vault::unlock(&password, &live)?;
+        password.zeroize();
+        crate::state::store_generation(&vault)?;
+        eprintln!("Restored legacy snapshot {id}. Pre-restore state kept as {pre}.");
+        return Ok(0);
+    }
     password.zeroize();
-    crate::state::store_generation(&vault)?;
-    eprintln!(
-        "Restored snapshot {id} (gen {}). Pre-restore state kept as {pre}.",
-        manifest.generation
-    );
-    Ok(0)
+    Err(SagitarriusError::Other(format!("snapshot {id} not found")))
+}
+
+/// Post-restore proof on the LIVE state: every File record resolves to a
+/// verified container. Restores that fail here keep their pre-restore copy.
+pub(crate) fn verify_live_complete(vault: &Vault) -> Result<()> {
+    for name in vault.names() {
+        if let Some(crate::vault_v3::RecordPayload::File { file_id, .. }) = vault.get_payload(name)
+        {
+            let (vmk, vault_id) = match vault {
+                Vault::V3(v) => (&v.vmk, v.header.vault_id.clone()),
+                Vault::V2(_) => {
+                    return Err(SagitarriusError::Other(
+                        "file record in v2 vault (unexpected)".into(),
+                    ))
+                }
+            };
+            crate::files::verify(vmk, &vault_id, &storage::files_dir()?, &file_id).map_err(
+                |e| {
+                    SagitarriusError::Other(format!(
+                        "restored vault references unverifiable file container for {name:?}: {e}"
+                    ))
+                },
+            )?;
+        }
+    }
+    Ok(())
 }
 
 pub fn delete(id: String) -> Result<i32> {
-    check_id(&id)?;
+    crate::storage::ensure_unlocked()?;
+    archive::check_id(&id)?;
     let dir = storage::snapshots_dir()?;
-    let _ = std::fs::remove_file(data_path(&dir, &id));
-    let _ = std::fs::remove_file(meta_path(&dir, &id));
+    if has_archive(&dir, &id) {
+        std::fs::remove_dir_all(dir.join(&id))?;
+    } else if has_legacy(&dir, &id) {
+        let _ = std::fs::remove_file(legacy_data(&dir, &id));
+        let _ = std::fs::remove_file(legacy_meta(&dir, &id));
+    }
     eprintln!("Snapshot {id} deleted (if it existed).");
     Ok(0)
 }

@@ -1,5 +1,25 @@
 # Snapshots & backups
 
+## Container format (v1)
+
+Snapshots and backups share one complete container — vault *plus* every
+referenced file container, so a File record can never outlive its bytes:
+
+```text
+<base>/<id>/
+  manifest.json            inventory + hashes (never plaintext secrets)
+  vault.json               encrypted vault bytes
+  files/<file-id>/         one encrypted container per File record
+    manifest.json
+    chunk-00000000 ...
+```
+
+`manifest.json` holds `{format, archive_format: 1, kind, id, vault_id,
+generation, vault_format, created_at, vault_sha256, files[], verified}`.
+Unknown `archive_format` values are rejected, never reinterpreted.
+Pre-container snapshots (`<id>.json` + `<id>.meta.json`, vault bytes only)
+are still listed/verified/restored and labeled *legacy*.
+
 ## Concepts
 
 - **Snapshot**: fast local history (`snapshots/`). Cheap, automatic safety
@@ -22,10 +42,17 @@ sagitarrius snapshot delete <id>
 
 sagitarrius backup create [--to <dir>]
 sagitarrius backup list              # local backups only (external may be offline)
-sagitarrius backup verify [id]
-sagitarrius backup restore <id>
+sagitarrius backup verify [id] [--from <dir>]
+sagitarrius backup restore <id> [--from <dir>]
 sagitarrius backup prune --keep 5
 ```
+
+Verification is whole-object: manifest → vault hash → full unlock →
+record/file cross-check → every chunk authenticated + hashed. Anything
+missing or mismatched fails the backup; restores additionally re-verify the
+live state afterward and keep a `pre-restore-*` copy. A restore whose
+pre-state is already destroyed still proceeds (nothing to preserve) after
+successful verification.
 
 Every restore: verifies the copy (hash + full unlock) *before* touching the
 live vault, snapshots the present as `pre-restore-*`, replaces atomically,

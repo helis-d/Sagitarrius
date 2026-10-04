@@ -1,0 +1,15 @@
+{
+  "header": {
+    "magic": "SAGITARRIUS",
+    "version": 2,
+    "kdf": "argon2id",
+    "kdf_params": {
+      "m_cost": 65536,
+      "t_cost": 3,
+      "p_cost": 4
+    },
+    "salt": "TU1NTU1NTU1NTU1NTU1NTQ=="
+  },
+  "nonce": "hGyUlalYwfuLep97",
+  "ciphertext": "RfOOLqGU5lCOrbpb9NSK+aI2MlX1T9AcXl1tsUry7GP5SreqzPEd7bJKOyC1UCWHfZ1g72madAmPX+eNHe0smD3AVRZFvT1tQzeZF1d+VM78eHEW0chJJOcXtBeunIzb/3OltgiHHNJCLt/a5d1lSruMBeTyXpZn4bXNN+nsjysq6Jnkz26llfZ4rDC0v/33cmmvWNAXd1eDnp/pTQaKSZJSJL3p9erwDj3JKbLfewv7pJj3dy95jmeXqRhIM3kSmJjtF3PhX3RDNg1yptNn"
+}

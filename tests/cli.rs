@@ -236,6 +236,7 @@ fn run_injects_env_and_propagates_exit_code() {
         .success();
 
     // Only the selected secret is injected; the rest stays out.
+    // Password helpers must never enter the child environment either.
     cmd(&dir)
         .args([
             "run",
@@ -244,7 +245,7 @@ fn run_injects_env_and_propagates_exit_code() {
             "--",
             "sh",
             "-c",
-            "printf %s \"$OPENAI_API_KEY\"; test -z \"$UNRELATED\"",
+            "printf %s \"$OPENAI_API_KEY\"; test -z \"$UNRELATED\"; test -z \"$SAGITARRIUS_PASSWORD\"; test -z \"$SAGITARRIUS_NEW_PASSWORD\"",
         ])
         .assert()
         .success()
@@ -564,4 +565,68 @@ fn v3_lifecycle_migrate_snapshot_rollback_recovery() {
         .assert()
         .success()
         .stdout("v-secret\n");
+}
+
+/// Real CLI migration: a genuine v2 vault file (tests/fixtures/v2-basic.json,
+/// password `v2-fixture-password`, committed) is converted by the actual
+/// `sagitarrius migrate` command.
+#[test]
+fn cli_migrate_v2_to_v3() {
+    use assert_cmd::Command as AssertCommand;
+    const FIXTURE_PW: &str = "v2-fixture-password";
+
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(
+        "tests/fixtures/v2-basic.json",
+        dir.path().join("vault.json"),
+    )
+    .unwrap();
+
+    // Fresh command per invocation: assert_cmd accumulates args otherwise.
+    let sag = || {
+        let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+        c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+        c.env("SAGITARRIUS_PASSWORD", FIXTURE_PW);
+        c
+    };
+    sag().arg("migrate").assert().success();
+
+    // Result is v3.
+    let raw = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(v["header"]["version"], 3);
+
+    // All values survived.
+    sag()
+        .args(["get", "LEGACY_ONE"])
+        .assert()
+        .success()
+        .stdout("legacy-secret-1\n");
+    sag()
+        .args(["get", "LEGACY_TWO"])
+        .assert()
+        .success()
+        .stdout("legacy-secret-2\n");
+
+    // Timestamps survived.
+    let out = sag().args(["info", "LEGACY_ONE"]).assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("1700000001"));
+
+    // The old v2 snapshot exists (pre-migrate safety net).
+    let snaps: Vec<_> = std::fs::read_dir(dir.path().join("snapshots"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(snaps.iter().any(|n| n.starts_with("pre-migrate-")));
+
+    // Migrated vault opens normally afterward.
+    sag().args(["list"]).assert().success();
+
+    // Repeated migrate is harmless and explicit.
+    sag()
+        .arg("migrate")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("already format v3"));
 }

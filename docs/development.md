@@ -60,6 +60,6 @@ producing a small single-file executable.
 
 ## Out of scope (by design)
 
-- No password recovery, no cloud sync, no team sharing, no browser integration.
+- No password recovery without a kit, no cloud sync, no team sharing, no browser integration.
 - `run` only injects valid POSIX env names; the rest are skipped with a warning.
 - File permission guarantees are only as strong as the platform provides.
