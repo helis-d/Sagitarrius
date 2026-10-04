@@ -5,6 +5,7 @@ use crate::vault::Vault;
 use zeroize::Zeroize;
 
 pub fn run() -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     let _lock = VaultLock::acquire()?;
     let mut data = storage::read_vault()?;
 
@@ -19,6 +20,7 @@ pub fn run() -> Result<i32> {
     };
     old_pw.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     let mut new_pw1 = match std::env::var("SAGITARRIUS_NEW_PASSWORD") {
         Ok(nw) if !nw.is_empty() => nw,
@@ -50,6 +52,7 @@ pub fn run() -> Result<i32> {
 
     let out = vault.serialize()?;
     storage::write_vault_atomic(&out)?;
+    crate::state::store_generation(&vault)?;
 
     eprintln!("Master password changed successfully.");
     Ok(0)

@@ -6,6 +6,7 @@ use crate::vault::Vault;
 use zeroize::Zeroize;
 
 pub fn run() -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     let _lock = VaultLock::acquire()?;
 
     if storage::vault_exists()? {
@@ -39,11 +40,12 @@ pub fn run() -> Result<i32> {
     }
     pw2.zeroize();
 
-    let vault = Vault::create(&pw1)?;
+    let mut vault = Vault::create(&pw1)?;
     pw1.zeroize();
 
     let data = vault.serialize()?;
     storage::write_vault_atomic(&data)?;
+    crate::state::store_generation(&vault)?;
 
     eprintln!("Vault initialized successfully.");
     Ok(0)

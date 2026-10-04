@@ -81,15 +81,17 @@ pub struct AuditReport {
     /// One entry per shared value; each holds the 2+ names using it.
     pub duplicate_groups: Vec<Vec<String>>,
     pub weak_secrets: Vec<String>,
+    /// Non-failing observations (missing recovery, no backups, ...).
+    pub notices: Vec<String>,
 }
 
-pub struct Vault {
+pub struct VaultV2 {
     header: VaultHeader,
     key: DerivedKey,
     payload: Payload,
 }
 
-impl Drop for Vault {
+impl Drop for VaultV2 {
     fn drop(&mut self) {
         // Best-effort: wipe plaintext secrets from memory. `DerivedKey`
         // already zeroizes itself via `ZeroizeOnDrop`.
@@ -106,26 +108,7 @@ fn current_timestamp() -> u64 {
         .unwrap_or(0)
 }
 
-impl Vault {
-    /// Create a brand new in-memory vault with an empty secret store.
-    pub fn create(password: &str) -> Result<Self> {
-        let salt = crypto::random_salt();
-        let params = KdfParams::default();
-        let key = crypto::derive_key(password, &salt, params)?;
-        let header = VaultHeader {
-            magic: MAGIC.into(),
-            version: FORMAT_VERSION,
-            kdf: "argon2id".into(),
-            kdf_params: params,
-            salt: B64.encode(salt),
-        };
-        Ok(Self {
-            header,
-            key,
-            payload: Payload::default(),
-        })
-    }
-
+impl VaultV2 {
     /// Decrypt and parse an existing vault file.
     pub fn unlock(password: &str, file_bytes: &[u8]) -> Result<Self> {
         let file: VaultFile =
@@ -308,14 +291,6 @@ impl Vault {
             .collect()
     }
 
-    pub fn secrets(&self) -> BTreeMap<String, String> {
-        self.payload
-            .secrets
-            .iter()
-            .map(|(k, v)| (k.clone(), v.value.clone()))
-            .collect()
-    }
-
     pub fn info(&self, name: &str) -> Option<SecretInfo> {
         self.payload.secrets.get(name).map(|entry| SecretInfo {
             name: name.into(),
@@ -430,6 +405,426 @@ impl Vault {
     }
 }
 
+/// Unified vault handle. New vaults are always v3 (VMK envelope +
+/// per-record encryption); v2 files open read/write in place until an
+/// explicit `migrate` converts them.
+pub enum Vault {
+    V2(VaultV2),
+    V3(crate::vault_v3::VaultV3),
+}
+
+impl Vault {
+    /// Create a brand-new v3 vault.
+    pub fn create(password: &str) -> Result<Self> {
+        Ok(Vault::V3(crate::vault_v3::VaultV3::create(password)?))
+    }
+
+    /// Open either format. The version probe reads only the header envelope;
+    /// v2 files keep the v2 code path (whole-payload decrypt, as before).
+    /// A known-magic header with a future version fails here as
+    /// `UnsupportedVersion` instead of falling into the wrong parser.
+    pub fn unlock(password: &str, file_bytes: &[u8]) -> Result<Self> {
+        if is_v3_bytes(file_bytes) {
+            return Ok(Vault::V3(crate::vault_v3::VaultV3::unlock(
+                password, file_bytes,
+            )?));
+        }
+        if let Some(v) = probed_version(file_bytes) {
+            if v > crate::vault_v3::FORMAT_VERSION_V3 {
+                return Err(SagitarriusError::UnsupportedVersion(v));
+            }
+        }
+        Ok(Vault::V2(VaultV2::unlock(password, file_bytes)?))
+    }
+
+    pub fn is_v3(&self) -> bool {
+        matches!(self, Vault::V3(_))
+    }
+
+    /// Stable vault identity for snapshots/state. v2 files predate vault ids;
+    /// they report a fixed legacy marker (no rollback tracking).
+    pub fn vault_id(&self) -> String {
+        match self {
+            Vault::V2(_) => "v2-legacy".into(),
+            Vault::V3(v) => v.header.vault_id.clone(),
+        }
+    }
+
+    pub fn generation(&self) -> u64 {
+        match self {
+            Vault::V2(_) => 0,
+            Vault::V3(v) => v.header.generation,
+        }
+    }
+
+    /// On-disk format version (2 or 3).
+    pub fn format_version(&self) -> u32 {
+        match self {
+            Vault::V2(_) => FORMAT_VERSION,
+            Vault::V3(v) => v.header.version,
+        }
+    }
+
+    /// KDF params guarding the password wrap/entry, if any.
+    pub fn password_kdf_params(&self) -> Option<KdfParams> {
+        match self {
+            Vault::V2(v) => Some(v.header.kdf_params),
+            Vault::V3(v) => v
+                .header
+                .wraps
+                .iter()
+                .find(|w| w.kind == crate::vault_v3::WRAP_KIND_PASSWORD)
+                .map(|w| w.kdf_params),
+        }
+    }
+
+    pub fn has_recovery(&self) -> bool {
+        match self {
+            Vault::V2(_) => false,
+            Vault::V3(v) => v.has_recovery(),
+        }
+    }
+
+    pub fn change_password(&mut self, new_password: &str) -> Result<()> {
+        match self {
+            Vault::V2(v) => v.change_password(new_password),
+            Vault::V3(v) => v.change_password(new_password),
+        }
+    }
+
+    pub fn serialize(&mut self) -> Result<Vec<u8>> {
+        match self {
+            Vault::V2(v) => v.serialize(),
+            Vault::V3(v) => v.serialize(),
+        }
+    }
+
+    /// Single-string value for Secret/Password/Note/Document kinds.
+    /// v3 decrypts exactly one record; v2 serves from its unlocked payload.
+    pub fn get(&self, name: &str) -> Option<String> {
+        match self {
+            Vault::V2(v) => v.get(name).map(|s| s.to_string()),
+            Vault::V3(v) => v
+                .get_payload(name)
+                .and_then(|p| p.single_value().map(|s| s.to_string())),
+        }
+    }
+
+    pub fn get_payload(&self, name: &str) -> Option<crate::vault_v3::RecordPayload> {
+        match self {
+            Vault::V2(v) => v.get(name).map(|s| crate::vault_v3::RecordPayload::Secret {
+                value: s.to_string(),
+            }),
+            Vault::V3(v) => v.get_payload(name),
+        }
+    }
+
+    /// Store a plain string as a `Secret` record (v3) / entry (v2).
+    pub fn set(&mut self, name: &str, value: &str) {
+        match self {
+            Vault::V2(v) => v.set(name, value),
+            Vault::V3(v) => {
+                let _ = v.set_payload(
+                    name,
+                    crate::vault_v3::RecordPayload::Secret {
+                        value: value.into(),
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn set_typed(&mut self, name: &str, payload: crate::vault_v3::RecordPayload) -> Result<()> {
+        match self {
+            Vault::V2(v) => {
+                let Some(value) = payload.single_value() else {
+                    return Err(SagitarriusError::Other(
+                        "this record kind needs vault format v3; run `sagitarrius migrate` first"
+                            .into(),
+                    ));
+                };
+                v.set(name, value);
+                Ok(())
+            }
+            Vault::V3(v) => v.set_payload(name, payload),
+        }
+    }
+
+    pub fn remove(&mut self, name: &str) -> bool {
+        match self {
+            Vault::V2(v) => v.remove(name),
+            Vault::V3(v) => {
+                if let Some(idx) = v.find_index(name) {
+                    v.records.remove(idx);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    pub fn exists(&self, name: &str) -> bool {
+        match self {
+            Vault::V2(v) => v.exists(name),
+            Vault::V3(v) => v.find_index(name).is_some(),
+        }
+    }
+
+    pub fn rename(&mut self, old: &str, new: &str) -> Result<()> {
+        validate_secret_name(old)?;
+        validate_secret_name(new)?;
+        match self {
+            Vault::V2(v) => v.rename(old, new),
+            Vault::V3(v) => {
+                if v.find_index(old).is_none() {
+                    return Err(SagitarriusError::SecretNotFound(old.into()));
+                }
+                if v.find_index(new).is_some() {
+                    return Err(SagitarriusError::SecretAlreadyExists(new.into()));
+                }
+                let idx = v.find_index(old).unwrap();
+                v.records[idx].name = new.into();
+                Ok(())
+            }
+        }
+    }
+
+    pub fn names(&self) -> Vec<&str> {
+        match self {
+            Vault::V2(v) => v.names(),
+            Vault::V3(v) => v.records.iter().map(|r| r.name.as_str()).collect(),
+        }
+    }
+
+    pub fn search(&self, query: &str) -> Vec<&str> {
+        match self {
+            Vault::V2(v) => v.search(query),
+            Vault::V3(v) => v
+                .records
+                .iter()
+                .filter(|r| r.name.contains(query))
+                .map(|r| r.name.as_str())
+                .collect(),
+        }
+    }
+
+    pub fn info(&self, name: &str) -> Option<SecretInfo> {
+        match self {
+            Vault::V2(v) => v.info(name),
+            Vault::V3(v) => {
+                let rec = v.records.iter().find(|r| r.name == name)?;
+                let len = v.get_payload(name)?.display_len();
+                Some(SecretInfo {
+                    name: name.into(),
+                    length: len,
+                    created_at: rec.created_at,
+                    updated_at: rec.updated_at,
+                    is_valid_env_name: is_valid_env_name(name),
+                })
+            }
+        }
+    }
+
+    pub fn import_env(&mut self, env_text: &str, overwrite: bool) -> (usize, usize) {
+        // Shared parser lives on V2; route through a scratch V2 view is
+        // wasteful, so v3 validates inline with identical rules.
+        match self {
+            Vault::V2(v) => v.import_env(env_text, overwrite),
+            Vault::V3(v) => {
+                let mut added = 0;
+                let mut skipped = 0;
+                for line in env_text.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with('#') {
+                        continue;
+                    }
+                    let line = line.strip_prefix("export ").unwrap_or(line).trim();
+                    let Some((k, val)) = line.split_once('=') else {
+                        skipped += 1;
+                        continue;
+                    };
+                    let key = k.trim();
+                    let val = parse_env_value(val.trim());
+                    if key.is_empty()
+                        || val.is_empty()
+                        || key.len() > MAX_SECRET_NAME_LEN
+                        || val.len() > MAX_SECRET_VALUE_LEN
+                        || validate_secret_name(key).is_err()
+                    {
+                        skipped += 1;
+                        continue;
+                    }
+                    if !overwrite && v.find_index(key).is_some() {
+                        skipped += 1;
+                    } else {
+                        if v.records.len() >= MAX_SECRETS && v.find_index(key).is_none() {
+                            skipped += 1;
+                            continue;
+                        }
+                        let _ = v.set_payload(
+                            key,
+                            crate::vault_v3::RecordPayload::Secret { value: val },
+                        );
+                        added += 1;
+                    }
+                }
+                (added, skipped)
+            }
+        }
+    }
+
+    pub fn export_env(&self) -> (String, Vec<String>) {
+        match self {
+            Vault::V2(v) => v.export_env(),
+            Vault::V3(v) => {
+                let mut out = String::new();
+                let mut skipped = Vec::new();
+                for rec in &v.records {
+                    match v
+                        .get_payload(&rec.name)
+                        .and_then(|p| p.single_value().map(|s| s.to_string()))
+                    {
+                        Some(value) if is_valid_env_name(&rec.name) => {
+                            out.push_str(&format!(
+                                "{n}={}\n",
+                                escape_env_value(&value),
+                                n = rec.name
+                            ));
+                        }
+                        _ => skipped.push(rec.name.clone()),
+                    }
+                }
+                (out, skipped)
+            }
+        }
+    }
+
+    pub fn audit(&self) -> AuditReport {
+        match self {
+            Vault::V2(v) => v.audit(),
+            Vault::V3(v) => {
+                let mut report = AuditReport {
+                    total_secrets: v.records.len(),
+                    ..Default::default()
+                };
+                // Owned keys (one extra copy per secret, wiped below): the
+                // decrypted values are temporaries and cannot back borrows.
+                let mut seen: BTreeMap<String, Vec<String>> = BTreeMap::new();
+                for rec in &v.records {
+                    if !is_valid_env_name(&rec.name) {
+                        report.invalid_env_names.push(rec.name.clone());
+                    }
+                    // Credential passwords join the analysis (never printed).
+                    let val: Option<String> = v.get_payload(&rec.name).and_then(|p| match p {
+                        crate::vault_v3::RecordPayload::Credential { password, .. } => {
+                            Some(password)
+                        }
+                        crate::vault_v3::RecordPayload::Secret { value }
+                        | crate::vault_v3::RecordPayload::Password { value }
+                        | crate::vault_v3::RecordPayload::Note { value }
+                        | crate::vault_v3::RecordPayload::Document { value } => Some(value),
+                        crate::vault_v3::RecordPayload::File { .. } => None,
+                    });
+                    if let Some(val) = val {
+                        if val.chars().count() < 8 {
+                            report.weak_secrets.push(rec.name.clone());
+                        }
+                        seen.entry(val).or_default().push(rec.name.clone());
+                    }
+                }
+                for (mut val, names) in seen {
+                    if names.len() > 1 {
+                        report.duplicate_groups.push(names);
+                    }
+                    val.zeroize();
+                }
+                report
+            }
+        }
+    }
+
+    pub fn add_recovery(&mut self, code_raw: &[u8; 32]) -> Result<()> {
+        match self {
+            Vault::V2(_) => Err(SagitarriusError::Other(
+                "recovery needs vault format v3; run `sagitarrius migrate` first".into(),
+            )),
+            Vault::V3(v) => v.add_recovery(code_raw),
+        }
+    }
+
+    pub fn reset_password_via_recovery(
+        &mut self,
+        code_raw: &[u8; 32],
+        new_password: &str,
+    ) -> Result<()> {
+        match self {
+            Vault::V2(_) => Err(SagitarriusError::Other(
+                "recovery needs vault format v3; run `sagitarrius migrate` first".into(),
+            )),
+            Vault::V3(v) => v.reset_password_via_recovery(code_raw, new_password),
+        }
+    }
+}
+
+/// Best-effort (magic, version) read for dispatch. Garbage returns None and
+/// falls through to the v2 parser, which fails closed on its own.
+fn probed_envelope(file_bytes: &[u8]) -> Option<(String, u32)> {
+    #[derive(Deserialize)]
+    struct Probe {
+        header: ProbeHeader,
+    }
+    #[derive(Deserialize)]
+    struct ProbeHeader {
+        magic: String,
+        version: u32,
+    }
+    serde_json::from_slice::<Probe>(file_bytes)
+        .ok()
+        .map(|p| (p.header.magic, p.header.version))
+}
+
+/// True when the file envelope declares v3. Only the tiny header envelope is
+/// inspected — no decryption, no allocation beyond the parse.
+fn is_v3_bytes(file_bytes: &[u8]) -> bool {
+    matches!(
+        probed_envelope(file_bytes),
+        Some((magic, v))
+            if magic == MAGIC && v == crate::vault_v3::FORMAT_VERSION_V3
+    )
+}
+
+fn probed_version(file_bytes: &[u8]) -> Option<u32> {
+    probed_envelope(file_bytes).and_then(|(magic, v)| if magic == MAGIC { Some(v) } else { None })
+}
+
+/// Convert a v2 vault file (bytes + password) into v3 bytes. Names, values
+/// and timestamps are preserved; kinds default to `Secret`. The caller is
+/// responsible for snapshotting the old file first and verifying the result
+/// (re-unlock) before replacing anything.
+pub fn migrate_v2_to_v3(password: &str, v2_bytes: &[u8]) -> Result<Vec<u8>> {
+    let old = VaultV2::unlock(password, v2_bytes)?;
+    let mut fresh = crate::vault_v3::VaultV3::create(password)?;
+    for (name, entry) in &old.payload.secrets {
+        fresh.import_legacy_entry(name, &entry.value, entry.created_at, entry.updated_at)?;
+    }
+    // Verify before handing back: the migrated vault must open cleanly.
+    let mut bytes = fresh.serialize()?;
+    let check = crate::vault_v3::VaultV3::unlock(password, &bytes)?;
+    for (name, entry) in &old.payload.secrets {
+        match check.get_payload(name) {
+            Some(crate::vault_v3::RecordPayload::Secret { value }) if value == entry.value => {}
+            _ => {
+                bytes.zeroize();
+                return Err(SagitarriusError::Other(
+                    "migration verification failed".into(),
+                ));
+            }
+        }
+    }
+    Ok(bytes)
+}
+
 fn is_valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     match chars.next() {
@@ -469,7 +864,7 @@ pub(crate) fn validate_secret_name(name: &str) -> Result<()> {
 /// Must run before `derive_key`: Argon2 allocates per these numbers, so a
 /// tampered `m_cost` in the gigabytes would DoS the machine before GCM gets
 /// a chance to reject the forgery.
-fn validate_kdf_params(p: KdfParams) -> Result<()> {
+pub(crate) fn validate_kdf_params(p: KdfParams) -> Result<()> {
     // Lower bounds keep Argon2 itself from rejecting with a confusing error;
     // the argon2 crate enforces m >= 8*p on top of this.
     const MIN_M_COST: u32 = 8 * 1024;
@@ -497,6 +892,24 @@ fn validate_payload(payload: &Payload) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Terminal-safe rendering of secret names. Current write paths reject
+/// control characters, but vaults written by older versions may contain
+/// them — never emit raw ESC/C0 bytes to the terminal.
+pub(crate) fn escape_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            c if c.is_control() => out.push_str(&format!("\\u{{{:X}}}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Values that only contain these characters are written raw so simple
@@ -597,7 +1010,7 @@ mod tests {
 
     #[test]
     fn create_and_unlock_empty() {
-        let v = Vault::create(PW).unwrap();
+        let mut v = Vault::create(PW).unwrap();
         let bytes = v.serialize().unwrap();
         let v = Vault::unlock(PW, &bytes).unwrap();
         assert_eq!(v.names().len(), 0);
@@ -609,12 +1022,12 @@ mod tests {
             v.set("openai", "sk-test-123");
             v.set("github", "gh-token");
         });
-        assert_eq!(v.get("openai"), Some("sk-test-123"));
-        assert_eq!(v.get("github"), Some("gh-token"));
+        assert_eq!(v.get("openai").as_deref(), Some("sk-test-123"));
+        assert_eq!(v.get("github").as_deref(), Some("gh-token"));
 
         v.rename("openai", "OPENAI_API_KEY").unwrap();
         assert!(!v.exists("openai"));
-        assert_eq!(v.get("OPENAI_API_KEY"), Some("sk-test-123"));
+        assert_eq!(v.get("OPENAI_API_KEY").as_deref(), Some("sk-test-123"));
 
         assert!(v.rename("OPENAI_API_KEY", "github").is_err());
 
@@ -629,7 +1042,7 @@ mod tests {
 
     #[test]
     fn wrong_password_fails() {
-        let v = Vault::create(PW).unwrap();
+        let mut v = Vault::create(PW).unwrap();
         let bytes = v.serialize().unwrap();
         assert!(Vault::unlock("wrong", &bytes).is_err());
     }
@@ -643,7 +1056,7 @@ mod tests {
 
         assert!(Vault::unlock(PW, &bytes).is_err());
         let unlocked = Vault::unlock("new-pw-123", &bytes).unwrap();
-        assert_eq!(unlocked.get("k"), Some("v"));
+        assert_eq!(unlocked.get("k").as_deref(), Some("v"));
     }
 
     #[test]
@@ -654,9 +1067,9 @@ mod tests {
         assert_eq!(added, 3);
         assert_eq!(skipped, 0);
 
-        assert_eq!(v.get("FOO"), Some("bar"));
-        assert_eq!(v.get("BAR"), Some("baz"));
-        assert_eq!(v.get("QUX"), Some("val"));
+        assert_eq!(v.get("FOO").as_deref(), Some("bar"));
+        assert_eq!(v.get("BAR").as_deref(), Some("baz"));
+        assert_eq!(v.get("QUX").as_deref(), Some("val"));
 
         let (exported, skipped) = v.export_env();
         assert!(exported.contains("FOO=bar"));
@@ -721,7 +1134,7 @@ mod tests {
         // '=' in name would corrupt .env output; must be skipped
         let (added, _) = v.import_env("A=B=C\n", false);
         assert_eq!(added, 1);
-        assert_eq!(v.get("A"), Some("B=C"));
+        assert_eq!(v.get("A").as_deref(), Some("B=C"));
     }
 
     #[test]
@@ -745,21 +1158,61 @@ mod tests {
         let mut v2 = Vault::create(PW).unwrap();
         let (added, _) = v2.import_env(&out, false);
         assert_eq!(added, 1);
-        assert_eq!(v2.get("SPACED"), Some("hello world #hash=eq"));
+        assert_eq!(v2.get("SPACED").as_deref(), Some("hello world #hash=eq"));
+    }
+
+    #[test]
+    fn migrate_v2_bytes_to_v3() {
+        use base64::{engine::general_purpose::STANDARD as B64t, Engine};
+        // Hand-build a genuine v2 vault file (the old format): header +
+        // whole-payload AES-GCM, one entry with fixed timestamps.
+        let params = crate::crypto::KdfParams::default();
+        let salt = [11u8; crate::crypto::SALT_LEN];
+        let key = crate::crypto::derive_key(PW, &salt, params).unwrap();
+        let header = VaultHeader {
+            magic: MAGIC.into(),
+            version: FORMAT_VERSION,
+            kdf: "argon2id".into(),
+            kdf_params: params,
+            salt: B64t.encode(salt),
+        };
+        let payload = serde_json::json!({"secrets": {
+            "LEGACY": {"value": "old-secret", "created_at": 111, "updated_at": 222}
+        }});
+        let aad = serde_json::to_vec(&header).unwrap();
+        let plain = serde_json::to_vec(&payload).unwrap();
+        let (nonce, ct) = crate::crypto::encrypt(&key, &plain, &aad).unwrap();
+        let file = VaultFile {
+            header,
+            nonce: B64t.encode(nonce),
+            ciphertext: B64t.encode(&ct),
+        };
+        let v2bytes = serde_json::to_vec_pretty(&file).unwrap();
+        // Sanity: facade sees v2.
+        assert!(!Vault::unlock(PW, &v2bytes).unwrap().is_v3());
+
+        let v3bytes = migrate_v2_to_v3(PW, &v2bytes).unwrap();
+        let v = Vault::unlock(PW, &v3bytes).unwrap();
+        assert!(v.is_v3());
+        assert_eq!(v.get("LEGACY").as_deref(), Some("old-secret"));
+        // Timestamps preserved across the migration.
+        let info = v.info("LEGACY").unwrap();
+        assert_eq!((info.created_at, info.updated_at), (111, 222));
     }
 
     #[test]
     fn kdf_params_out_of_bounds_rejected() {
-        let v = Vault::create(PW).unwrap();
+        let mut v = Vault::create(PW).unwrap();
         let bytes = v.serialize().unwrap();
-        let mut file: VaultFile = serde_json::from_slice(&bytes).unwrap();
-        // Absurd memory claim must fail fast, before any Argon2 allocation.
-        file.header.kdf_params.m_cost = 4 * 1024 * 1024;
+        // Tamper with the v3 password wrap's KDF params: must fail fast,
+        // before any Argon2 allocation (wrap AAD won't match either).
+        let mut file: crate::vault_v3::VaultFileV3 = serde_json::from_slice(&bytes).unwrap();
+        file.header.wraps[0].kdf_params.m_cost = 4 * 1024 * 1024;
         let evil = serde_json::to_vec(&file).unwrap();
         assert!(Vault::unlock(PW, &evil).is_err());
-        // Zero time cost / parallelism are equally invalid.
-        file.header.kdf_params.m_cost = 65536;
-        file.header.kdf_params.t_cost = 0;
+        // Zero time cost is equally invalid.
+        file.header.wraps[0].kdf_params.m_cost = 65536;
+        file.header.wraps[0].kdf_params.t_cost = 0;
         let evil = serde_json::to_vec(&file).unwrap();
         assert!(Vault::unlock(PW, &evil).is_err());
         // Sane params still open.

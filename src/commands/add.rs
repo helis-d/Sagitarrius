@@ -2,10 +2,27 @@ use crate::error::{Result, SagitarriusError};
 use crate::input;
 use crate::storage::{self, VaultLock};
 use crate::vault::Vault;
+use crate::vault_v3::RecordPayload;
 use zeroize::Zeroize;
 
-pub fn run(name: String, value: Option<String>) -> Result<i32> {
+pub fn run(
+    name: String,
+    value: Option<String>,
+    kind: String,
+    username: Option<String>,
+) -> Result<i32> {
     crate::vault::validate_secret_name(&name)?;
+    crate::storage::ensure_unlocked()?;
+    let kind = crate::vault_v3::RecordKind::parse(&kind).ok_or_else(|| {
+        SagitarriusError::Other(
+            "unknown --kind (expected secret|password|note|credential|document)".into(),
+        )
+    })?;
+    if kind == crate::vault_v3::RecordKind::File {
+        return Err(SagitarriusError::Other(
+            "file records are created with `sagitarrius file put <path>`".into(),
+        ));
+    }
 
     let _lock = VaultLock::acquire()?;
     let mut data = storage::read_vault()?;
@@ -21,6 +38,7 @@ pub fn run(name: String, value: Option<String>) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     if vault.exists(&name) {
         return Err(SagitarriusError::SecretAlreadyExists(name));
@@ -68,11 +86,38 @@ pub fn run(name: String, value: Option<String>) -> Result<i32> {
             crate::vault::MAX_SECRETS
         )));
     }
-    vault.set(&name, &v1);
+
+    // Credential records pair a (non-secret) username with the secret value.
+    let mut username = username;
+    if kind == crate::vault_v3::RecordKind::Credential && username.is_none() {
+        let mut u = input::read_line("Username: ")?;
+        if u.trim().is_empty() {
+            u.zeroize();
+            v1.zeroize();
+            return Err(SagitarriusError::Other("username must not be empty".into()));
+        }
+        username = Some(u);
+    }
+    let payload = match kind {
+        crate::vault_v3::RecordKind::Secret => RecordPayload::Secret { value: v1.clone() },
+        crate::vault_v3::RecordKind::Password => RecordPayload::Password { value: v1.clone() },
+        crate::vault_v3::RecordKind::Note => RecordPayload::Note { value: v1.clone() },
+        crate::vault_v3::RecordKind::Document => RecordPayload::Document { value: v1.clone() },
+        crate::vault_v3::RecordKind::Credential => RecordPayload::Credential {
+            username: username.clone().unwrap_or_default(),
+            password: v1.clone(),
+        },
+        crate::vault_v3::RecordKind::File => unreachable!("rejected above"),
+    };
     v1.zeroize();
+    vault.set_typed(&name, payload)?;
+    if let Some(mut u) = username {
+        u.zeroize();
+    }
 
     let out = vault.serialize()?;
     storage::write_vault_atomic(&out)?;
+    crate::state::store_generation(&vault)?;
 
     eprintln!("Secret {name:?} added successfully.");
     Ok(0)

@@ -50,13 +50,17 @@ export OPENAI_API_KEY="$(sagitarrius get OPENAI_API_KEY)"
 |---|---|
 | `menu` | Show the launch menu |
 | `init` / `passwd` | Create the vault / change the master password |
-| `add` / `gen` / `edit` | Add, generate, or replace a secret |
-| `get` / `info` | Print a value / show metadata (never the value) |
+| `add` / `gen` / `edit` | Add (typed: secret/password/note/credential/document), generate, or replace |
+| `get [--json]` / `info` | Print a value / show metadata (never the value) |
 | `list` / `search` / `exists` | Browse names (values are never shown) |
 | `rename` / `remove` | Rename without overwriting / delete with confirmation |
-| `import` / `export` | Bulk move secrets in `.env` format |
-| `audit` | Health check: short values, duplicates, bad names |
-| `run -- <cmd>` | Run a command with secrets in its environment |
+| `import` / `export --plaintext` | Bulk move secrets in `.env` format (export is explicitly opt-in) |
+| `audit` / `status` | Health check / concise security status |
+| `run --secret N -- <cmd>` | Run a command with *only* the named secrets in its environment |
+| `snapshot` / `backup` | Encrypted local history / backups (verify + restore) |
+| `recovery` | Recovery code kit for a lost master password |
+| `file put/get` | Encrypted files (chunked, authenticated) |
+| `migrate` / `lockdown` | Upgrade v2 → v3 / refuse all decryption until released |
 
 Full reference: [docs/commands.md](docs/commands.md).
 
@@ -75,6 +79,10 @@ Full reference: [docs/commands.md](docs/commands.md).
 
 - [Installation](docs/installation.md) · [Commands](docs/commands.md) ·
   [Vault & crypto](docs/vault-and-crypto.md) ·
+  [Architecture (v3)](docs/architecture.md) ·
+  [Threat model](docs/threat-model.md) ·
+  [Snapshots & backups](docs/backup.md) · [Recovery](docs/recovery.md) ·
+  [Security testing](docs/security-testing.md) ·
   [Development](docs/development.md)
 
 ## License

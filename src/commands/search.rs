@@ -23,13 +23,14 @@ pub fn run(query: String) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     let matches = vault.search(&query);
     if matches.is_empty() {
         return Ok(1);
     }
     for m in matches {
-        println!("{m}");
+        println!("{}", crate::vault::escape_name(m));
     }
     Ok(0)
 }

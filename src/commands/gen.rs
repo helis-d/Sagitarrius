@@ -6,6 +6,7 @@ use crate::vault::Vault;
 use zeroize::Zeroize;
 
 pub fn run(name: String, length: usize, no_symbols: bool) -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     /// Upper bound to avoid accidental/OOM allocations (`vec![0u8; N]`).
     const MAX_GENERATED_SECRET_LEN: usize = 4096;
     crate::vault::validate_secret_name(&name)?;
@@ -34,6 +35,7 @@ pub fn run(name: String, length: usize, no_symbols: bool) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     if vault.exists(&name) {
         return Err(SagitarriusError::SecretAlreadyExists(name));
@@ -45,6 +47,7 @@ pub fn run(name: String, length: usize, no_symbols: bool) -> Result<i32> {
 
     let out = vault.serialize()?;
     storage::write_vault_atomic(&out)?;
+    crate::state::store_generation(&vault)?;
 
     eprintln!("Generated random secret for {name:?} ({length} chars) and saved to vault.");
     Ok(0)

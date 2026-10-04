@@ -51,6 +51,56 @@ pub fn vault_exists() -> Result<bool> {
     Ok(platform::vault_path()?.exists())
 }
 
+/// Directory holding encrypted snapshots (`<id>.json` + `<id>.meta.json`).
+pub fn snapshots_dir() -> Result<PathBuf> {
+    Ok(platform::vault_dir()?.join("snapshots"))
+}
+
+/// Directory holding encrypted backups (same layout as snapshots).
+pub fn backups_dir() -> Result<PathBuf> {
+    Ok(platform::vault_dir()?.join("backups"))
+}
+
+/// Directory holding encrypted file containers (`<hex-id>/` each).
+pub fn files_dir() -> Result<PathBuf> {
+    Ok(platform::vault_dir()?.join("files"))
+}
+
+/// Presence of this file means the vault is in lockdown: decryption
+/// operations are refused until `lockdown --off`.
+pub fn lockdown_path() -> Result<PathBuf> {
+    Ok(platform::vault_dir()?.join("lockdown"))
+}
+
+pub fn is_locked_down() -> Result<bool> {
+    Ok(lockdown_path()?.exists())
+}
+
+pub fn set_lockdown(on: bool) -> Result<()> {
+    let path = lockdown_path()?;
+    if on {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        write_file_atomic(&path, b"locked\n")?;
+    } else if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+/// Refuse when the vault is in lockdown. Call at the top of every command
+/// that decrypts secrets or mutates the vault.
+pub fn ensure_unlocked() -> Result<()> {
+    if is_locked_down()? {
+        return Err(SagitarriusError::Other(
+            "vault is in lockdown: decryption is disabled until `sagitarrius lockdown --off`"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 pub fn read_vault() -> Result<Vec<u8>> {
     use crate::vault::MAX_VAULT_FILE_SIZE;
     let path = platform::vault_path()?;
@@ -139,6 +189,63 @@ fn tighten_file_permissions(path: &Path) -> Result<()> {
         fs::set_permissions(path, perms)?;
     }
     Ok(())
+}
+
+/// Generic atomic file write: temp file (0600 on unix) in the destination
+/// directory + fsync + rename + tighten. Used for snapshots, backups, state
+/// and exported plaintext — never follow a destination symlink for the data:
+/// `rename` replaces the link itself.
+pub fn write_file_atomic(path: &Path, data: &[u8]) -> Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| SagitarriusError::Other("path has no parent".into()))?;
+    fs::create_dir_all(dir)?;
+    set_dir_permissions(dir)?;
+
+    let unique = format!(
+        ".tmp-{}-{}.tmp",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp_path = dir.join(unique);
+
+    {
+        let mut opts = OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp_path)?;
+        if let Err(e) = f.write_all(data).and_then(|_| f.sync_all()) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+    }
+
+    if let Err(e) = fs::rename(&tmp_path, path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
+
+    #[cfg(unix)]
+    let _ = tighten_file_permissions(path);
+    #[cfg(unix)]
+    if let Ok(dirf) = File::open(dir) {
+        let _ = dirf.sync_all();
+    }
+
+    Ok(())
+}
+
+/// Persist trusted generation state (no secrets inside; still 0600).
+pub fn write_state_atomic(data: &[u8]) -> Result<()> {
+    let path = platform::vault_dir()?.join("state.json");
+    write_file_atomic(&path, data)
 }
 
 #[cfg(unix)]

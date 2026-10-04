@@ -17,9 +17,13 @@ src/
 ├── main.rs         entry point
 ├── cli.rs          clap definitions
 ├── banner.rs       launch menu ASCII-ART (rasterized from assets/sagitarrius-logo.svg)
-├── commands/       one file per subcommand
-├── crypto.rs       Argon2id + AES-256-GCM
-├── vault.rs        on-disk format, CRUD
+├── commands/       one file per subcommand (+ snapshot/backup/recovery/file/...)
+├── crypto.rs       Argon2id + AES-256-GCM (+ nonce-explicit variants)
+├── envelope.rs     VMK, wraps, HKDF sub-keys, recovery codes
+├── vault.rs        v2 format + unified Vault facade + migration
+├── vault_v3.rs     v3 envelope format, typed records
+├── files.rs        chunked authenticated file containers
+├── state.rs        trusted generation state (rollback detection)
 ├── storage.rs      atomic writes, file locking
 ├── platform.rs     OS-specific paths
 ├── input.rs        terminal / pipe input

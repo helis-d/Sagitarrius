@@ -1,21 +1,28 @@
 mod add;
 mod audit;
+mod backup;
 mod edit;
 mod exists;
 mod export;
+mod file;
 mod gen;
 mod get;
 mod import;
 mod info;
 mod init;
 mod list;
+mod lockdown;
+mod migrate;
 mod passwd;
+mod recovery;
 mod remove;
 mod rename;
 mod run;
 mod search;
+mod snapshot;
+mod status;
 
-use crate::cli::Commands;
+use crate::cli::{BackupAction, Commands, FileAction, RecoveryAction, SnapshotAction};
 use crate::error::Result;
 
 pub fn dispatch(cmd: Commands) -> Result<i32> {
@@ -26,13 +33,18 @@ pub fn dispatch(cmd: Commands) -> Result<i32> {
         }
         Commands::Init => init::run(),
         Commands::Passwd => passwd::run(),
-        Commands::Add { name, value } => add::run(name, value),
+        Commands::Add {
+            name,
+            value,
+            kind,
+            username,
+        } => add::run(name, value, kind, username),
         Commands::Gen {
             name,
             length,
             no_symbols,
         } => gen::run(name, length, no_symbols),
-        Commands::Get { name } => get::run(name),
+        Commands::Get { name, json } => get::run(name, json),
         Commands::Info { name } => info::run(name),
         Commands::List => list::run(),
         Commands::Remove { name, yes } => remove::run(name, yes),
@@ -41,8 +53,34 @@ pub fn dispatch(cmd: Commands) -> Result<i32> {
         Commands::Exists { name } => exists::run(name),
         Commands::Search { query } => search::run(query),
         Commands::Import { path, overwrite } => import::run(path, overwrite),
-        Commands::Export { path } => export::run(path),
+        Commands::Export { plaintext, path } => export::run(plaintext, path),
         Commands::Audit => audit::run(),
-        Commands::Run { command } => run::run(command),
+        Commands::Migrate => migrate::run(),
+        Commands::Snapshot { action } => match action {
+            SnapshotAction::Create => snapshot::create(),
+            SnapshotAction::List => snapshot::list(),
+            SnapshotAction::Verify { id } => snapshot::verify(id),
+            SnapshotAction::Restore { id } => snapshot::restore(id),
+            SnapshotAction::Delete { id } => snapshot::delete(id),
+        },
+        Commands::Backup { action } => match action {
+            BackupAction::Create { to } => backup::create(to),
+            BackupAction::List => backup::list(),
+            BackupAction::Verify { id } => backup::verify(id),
+            BackupAction::Restore { id } => backup::restore(id),
+            BackupAction::Prune { keep } => backup::prune(keep),
+        },
+        Commands::Recovery { action } => match action {
+            RecoveryAction::Create => recovery::create(),
+            RecoveryAction::Verify => recovery::verify(),
+            RecoveryAction::ResetPassword => recovery::reset_password(),
+        },
+        Commands::File { action } => match action {
+            FileAction::Put { path, name } => file::put(path, name),
+            FileAction::Get { name, dest } => file::get(name, dest),
+        },
+        Commands::Status => status::run(),
+        Commands::Lockdown { off } => lockdown::run(off),
+        Commands::Run { secret, command } => run::run(secret, command),
     }
 }

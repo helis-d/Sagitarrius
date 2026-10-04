@@ -6,7 +6,22 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use zeroize::Zeroize;
 
-pub fn run(path: Option<String>) -> Result<i32> {
+pub fn run(plaintext: bool, path: Option<String>) -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
+    if !plaintext {
+        // Fail closed: decrypting the vault to disk must be a deliberate,
+        // visible act, never a default. Prefer `run --secret ...` so secrets
+        // stay out of files entirely.
+        return Err(crate::error::SagitarriusError::Other(
+            "plaintext export requires --plaintext (e.g. sagitarrius export --plaintext out.env); \
+             prefer `run --secret NAME -- <cmd>` to avoid writing secrets to disk"
+                .into(),
+        ));
+    }
+    eprintln!(
+        "Warning: exporting DECRYPTED secrets. The output is NOT protected by \
+         the master password — handle and delete it carefully."
+    );
     let mut data = storage::read_vault()?;
 
     let mut password = input::master_password("Master password: ")?;
@@ -20,6 +35,7 @@ pub fn run(path: Option<String>) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     let (mut env_output, skipped) = vault.export_env();
 

@@ -11,15 +11,25 @@ vulnerabilities that could affect users.
 
 ## Threat model
 
-Sagitarrius protects an encrypted vault file **at rest** against an attacker
-who obtains a copy of that file but does not control the machine where it
-was created or read.
+Sagitarrius protects encrypted vault data **at rest** and provides
+**verifiable recovery** from corruption and destructive filesystem events.
+Full statement: [docs/threat-model.md](docs/threat-model.md).
 
 ### In scope
 
 - Loss or theft of a disk, backup, or synced copy of `vault.json`.
-- Silent tampering with the vault file.
-- Accidental disclosure of values through command output.
+- Silent tampering with the vault file, snapshots, backups, or file
+  containers (all authenticated; failures are closed, never partial).
+- Replay of an older-but-authentic vault (generation counter + trusted
+  state refuse stale files; v2 files report rollback protection
+  as unavailable).
+- Ransomware-like modification of accessible storage: detected via
+  integrity/generation signals; recovery via verified snapshots and
+  *offline* backups. Same-disk copies are history, not protection.
+- Accidental disclosure of values through command output (values never in
+  list/search/audit; names are terminal-escaped).
+- Child-process over-exposure: `run` injects only `--secret` names and
+  strips password helpers.
 - Partial or torn writes if the process is interrupted mid-update.
 
 ### Out of scope
@@ -27,30 +37,32 @@ was created or read.
 - A compromised machine. A keylogger, rootkit, debugger, or hostile root
   user can recover both the master password and the plaintext.
 - Brute-force resistance against weak master passwords. Argon2id raises the
-  cost of each guess; it does not eliminate the risk.
+  cost of each guess; it does not eliminate it.
 - Exposure through shell history, `ps`, `/proc`, or `argv` when a secret is
   passed as a command-line argument.
-- Any process that can read the environment of a child spawned by
-  `sagitarrius run`. The child (and anything that can inspect it) has full
-  access to every injected secret.
+- A child process intentionally given a secret: it can leak it by design.
+- An attacker replacing **both** `vault.json` **and** `state.json`
+  consistently (locally indistinguishable — offline backups defeat this).
+- Forensic remnants of old ciphertext on disk; swap/pagefile disclosure.
 - Physical coercion, rubber-hose cryptanalysis, or legal compulsion.
-- Password recovery. There is no recovery path by design.
+- Password recovery *without* a recovery kit. With a kit
+  (`recovery create`), password *reset* is supported — nothing ever stores
+  the password itself.
 
-## Cryptographic design
+## Cryptographic design (v3; v2 files use whole-payload AES-GCM)
 
-- **KDF:** Argon2id
-  - m_cost = 65536 KiB (64 MiB)
-  - t_cost = 3
-  - p_cost = 4
-  - 16-byte salt, generated with `rand::thread_rng()` (CSPRNG).
-- **AEAD:** AES-256-GCM
-  - 12-byte nonce, freshly generated for every encryption operation.
-  - 16-byte authentication tag (appended by `aes-gcm`).
-  - The vault header (magic, version, KDF identifier, KDF parameters, salt)
-    is passed as additional authenticated data. Any tampering with the
-    header invalidates the tag.
-- **No primitive is hand-rolled.** All primitives are provided by the
-  `argon2` and `aes-gcm` crates.
+- **Vault Master Key:** 32 random bytes, never derived. Password and
+  recovery code each derive a wrapping KEK (Argon2id) that unwraps the VMK.
+- **KDF:** Argon2id (m=64 MiB, t=3, p=4; per-wrap 16-byte salt).
+  Header KDF params are bounds-checked *before* derivation.
+- **Records:** AES-256-GCM under `HKDF(VMK, "SAGITARRIUS/v3/record/<id>")`,
+  fresh 96-bit nonce per record write; AAD binds vault id, record id, kind,
+  version. `get` decrypts exactly one record.
+- **Files:** 64 KiB chunks, nonce = 32-bit random prefix || 64-bit counter;
+  per-chunk AAD + SHA-256 cross-check.
+- **Wraps:** AES-256-GCM; AAD binds magic, version, vault id, wrap kind,
+  KDF params, salt.
+- **No primitive is hand-rolled.** `argon2`, `aes-gcm`, `hkdf`, `sha2`.
 
 ## Master password model
 

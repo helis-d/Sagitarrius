@@ -229,17 +229,52 @@ fn run_injects_env_and_propagates_exit_code() {
         .write_stdin("sk-run\nsk-run\n")
         .assert()
         .success();
-
     cmd(&dir)
-        .args(["run", "--", "sh", "-c", "printf %s \"$OPENAI_API_KEY\""])
+        .args(["add", "UNRELATED"])
+        .write_stdin("nope\nnope\n")
+        .assert()
+        .success();
+
+    // Only the selected secret is injected; the rest stays out.
+    cmd(&dir)
+        .args([
+            "run",
+            "--secret",
+            "OPENAI_API_KEY",
+            "--",
+            "sh",
+            "-c",
+            "printf %s \"$OPENAI_API_KEY\"; test -z \"$UNRELATED\"",
+        ])
         .assert()
         .success()
         .stdout("sk-run");
 
     cmd(&dir)
-        .args(["run", "--", "sh", "-c", "exit 42"])
+        .args([
+            "run",
+            "--secret",
+            "OPENAI_API_KEY",
+            "--",
+            "sh",
+            "-c",
+            "exit 42",
+        ])
         .assert()
         .code(42);
+}
+
+#[test]
+fn run_without_secret_selection_refuses() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "k", "v"]).assert().success();
+
+    cmd(&dir)
+        .args(["run", "--", "sh", "-c", "exit 0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no secrets selected"));
 }
 
 #[test]
@@ -313,10 +348,23 @@ fn import_export_flow() {
         .success()
         .stdout("localhost\n");
 
-    let out = cmd(&dir).args(["export"]).assert().success();
+    let out = cmd(&dir).args(["export", "--plaintext"]).assert().success();
     let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     assert!(stdout.contains("API_HOST=localhost"));
     assert!(stdout.contains("API_PORT=8080"));
+}
+
+#[test]
+fn export_without_plaintext_flag_refuses() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "k", "v"]).assert().success();
+
+    cmd(&dir)
+        .args(["export"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--plaintext"));
 }
 
 #[test]
@@ -422,10 +470,98 @@ fn export_warns_about_skipped_names() {
         .assert()
         .success();
 
-    let out = cmd(&dir).args(["export"]).assert().success();
+    let out = cmd(&dir).args(["export", "--plaintext"]).assert().success();
     let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
     let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
     assert!(stdout.contains("FINE=value12345"));
     assert!(!stdout.contains("odd-name"));
     assert!(stderr.contains("odd-name"));
+}
+
+#[test]
+fn v3_lifecycle_migrate_snapshot_rollback_recovery() {
+    use assert_cmd::Command as AssertCommand;
+    let dir = TempDir::new().unwrap();
+    // Fresh vaults are v3.
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v-secret"]).assert().success();
+
+    // Snapshot, then verify it.
+    let out = cmd(&dir).args(["snapshot", "create"]).assert().success();
+    let err = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    let snap_id = err
+        .split_whitespace()
+        .nth(1)
+        .expect("snapshot id in output")
+        .to_string();
+    cmd(&dir)
+        .args(["snapshot", "verify", &snap_id])
+        .assert()
+        .success();
+
+    // Rollback simulation: tamper the live vault generation downward by
+    // restoring... instead simulate stale state by bumping trusted state:
+    // add another secret (gen 3), snapshot it, then restore the older snap.
+    cmd(&dir).args(["add", "K2", "v2"]).assert().success();
+    cmd(&dir)
+        .args(["snapshot", "restore", &snap_id])
+        .assert()
+        .success();
+    // Restored vault opens and holds the old data, not K2.
+    cmd(&dir)
+        .args(["get", "K"])
+        .assert()
+        .success()
+        .stdout("v-secret\n");
+    cmd(&dir).args(["exists", "K2"]).assert().code(1);
+    // Rollback tripwire: replacing vault.json with the *current* bytes plus
+    // a forged future state file must fail closed.
+    let state_path = dir.path().join("state.json");
+    let mut state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    state["generation"] = serde_json::Value::from(9999u64);
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    cmd(&dir)
+        .args(["get", "K"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("older than trusted"));
+
+    // Fix state by restoring again (adopts manifest generation).
+    cmd(&dir)
+        .args(["snapshot", "restore", &snap_id])
+        .assert()
+        .success();
+
+    // Recovery round-trip via env-provided code piped to stdin-less verify?
+    // recovery create prints the code; capture it from stdout.
+    let out = cmd(&dir).args(["recovery", "create"]).assert().success();
+    let code = String::from_utf8(out.get_output().stdout.clone())
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(code.len() > 32);
+    // status shows recovery ready.
+    let out = cmd(&dir).arg("status").assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("READY"));
+
+    // Reset the password using only the code: simulate a lost password by
+    // dropping SAGITARRIUS_PASSWORD and feeding interactive answers.
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env_remove("SAGITARRIUS_PASSWORD");
+    c.args(["recovery", "reset-password"])
+        .write_stdin(format!("{code}\nnew-after-loss\nnew-after-loss\n"))
+        .assert()
+        .success();
+    // Old password dead, new password opens, data intact.
+    cmd(&dir).args(["get", "K"]).assert().failure();
+    let mut c2 = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c2.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c2.env("SAGITARRIUS_PASSWORD", "new-after-loss");
+    c2.args(["get", "K"])
+        .assert()
+        .success()
+        .stdout("v-secret\n");
 }

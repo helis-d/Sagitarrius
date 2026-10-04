@@ -6,6 +6,7 @@ use std::fs;
 use zeroize::Zeroize;
 
 pub fn run(path: String, overwrite: bool) -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     // Bound memory use before reading an attacker-influenced file.
     let import_meta = fs::metadata(&path)?;
     if import_meta.len() > crate::vault::MAX_IMPORT_FILE_SIZE {
@@ -41,6 +42,7 @@ pub fn run(path: String, overwrite: bool) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     let (added, skipped) = vault.import_env(&env_content, overwrite);
     env_content.zeroize();
@@ -48,6 +50,7 @@ pub fn run(path: String, overwrite: bool) -> Result<i32> {
     if added > 0 {
         let out = vault.serialize()?;
         storage::write_vault_atomic(&out)?;
+        crate::state::store_generation(&vault)?;
     }
 
     eprintln!("Import complete: {added} secret(s) added/updated, {skipped} skipped.");

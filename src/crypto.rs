@@ -48,6 +48,12 @@ impl DerivedKey {
     pub fn as_bytes(&self) -> &[u8; KEY_LEN] {
         &self.0
     }
+
+    /// Wrap raw key material. The input buffer should be wiped by the caller
+    /// if it holds a copy (see `envelope`); the wrapper wipes itself on drop.
+    pub(crate) fn from_bytes(b: [u8; KEY_LEN]) -> Self {
+        Self(b)
+    }
 }
 
 /// Cryptographically secure random salt.
@@ -125,6 +131,48 @@ pub fn encrypt(
         )
         .map_err(|_| SagitarriusError::Other("encryption failed".into()))?;
     Ok((nonce_bytes, ct))
+}
+
+/// Encrypt with a caller-chosen nonce (chunked file containers). The caller
+/// owns uniqueness (e.g. random prefix + counter); misuse reuses nonces.
+pub fn encrypt_with_nonce(
+    key: &DerivedKey,
+    plaintext: &[u8],
+    aad: &[u8],
+    nonce_bytes: &[u8; NONCE_LEN],
+) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_bytes()));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
+        .map_err(|_| SagitarriusError::Other("encryption failed".into()))
+}
+
+/// Decrypt with a caller-chosen nonce. Failures collapse to
+/// `InvalidPassword`, same as [`decrypt`].
+pub fn decrypt_with_nonce(
+    key: &DerivedKey,
+    nonce_bytes: &[u8; NONCE_LEN],
+    ciphertext: &[u8],
+    aad: &[u8],
+) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key.as_bytes()));
+    let nonce = Nonce::from_slice(nonce_bytes);
+    cipher
+        .decrypt(
+            nonce,
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
+        .map_err(|_| SagitarriusError::InvalidPassword)
 }
 
 /// Any failure mode (wrong key, tampered ciphertext, tampered AAD,

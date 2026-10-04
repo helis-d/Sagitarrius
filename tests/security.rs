@@ -23,6 +23,144 @@ fn seed(dir: &TempDir) {
         .success();
 }
 
+fn vault_bytes(dir: &TempDir) -> Vec<u8> {
+    fs::read(dir.path().join("vault.json")).unwrap()
+}
+
+fn rewrite_vault(dir: &TempDir, bytes: &[u8]) {
+    fs::write(dir.path().join("vault.json"), bytes).unwrap();
+}
+
+/// Mutate the parsed vault JSON with `f`, write it back, and assert `get`
+/// fails without leaking the secret on either stream.
+fn assert_hostile<F>(dir: &TempDir, f: F, expect_stderr: &str)
+where
+    F: FnOnce(&mut serde_json::Value),
+{
+    let mut v: serde_json::Value = serde_json::from_slice(&vault_bytes(dir)).unwrap();
+    f(&mut v);
+    rewrite_vault(dir, &serde_json::to_vec(&v).unwrap());
+    let out = cmd(dir).args(["get", "k"]).assert().failure();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(!stdout.contains(SECRET));
+    assert!(!stderr.contains(SECRET));
+    assert!(
+        stderr.contains(expect_stderr),
+        "expected {expect_stderr:?} in {stderr:?}"
+    );
+}
+
+#[test]
+fn hostile_unknown_version_fails_closed() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    assert_hostile(&dir, |v| v["header"]["version"] = 99.into(), "unsupported");
+}
+
+#[test]
+fn hostile_unknown_kdf_fails_closed() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    assert_hostile(
+        &dir,
+        |v| v["header"]["kdf"] = "scrypt".into(),
+        "invalid vault",
+    );
+}
+
+#[test]
+fn hostile_bad_base64_salt_fails_closed() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    // v3 keeps salts inside wraps.
+    assert_hostile(
+        &dir,
+        |v| v["header"]["wraps"][0]["salt"] = "!!!not-base64!!!".into(),
+        "invalid vault",
+    );
+}
+
+#[test]
+fn hostile_absurd_kdf_fails_fast() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    // 1 TiB memory claim: must be rejected before Argon2 allocates.
+    assert_hostile(
+        &dir,
+        |v| v["header"]["wraps"][0]["kdf_params"]["m_cost"] = (1024 * 1024).into(),
+        "invalid vault",
+    );
+}
+
+#[test]
+fn hostile_garbage_file_fails_closed() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    for garbage in [
+        &b"not json at all"[..],
+        &b"{\"header\":{}}"[..],
+        &b"{\"header\":{\"magic\":\"NOPE\",\"version\":3}}"[..],
+        &[][..],
+    ] {
+        rewrite_vault(&dir, garbage);
+        let out = cmd(&dir).args(["get", "k"]).assert().failure();
+        let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+        let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(!stdout.contains(SECRET));
+        assert!(!stderr.contains(SECRET));
+    }
+}
+
+#[test]
+fn hostile_env_import_is_bounded_and_safe() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    // No '=', empty key/value, control chars: all skipped. ('=' inside the
+    // *value* is legal and imports fine.)
+    let evil = "NOEQUALS\n=nokey\nEMPTY=\nBAD=C=D\nok=1\nA\x00B=x\n";
+    let path = dir.path().join("evil.env");
+    fs::write(&path, evil).unwrap();
+    let out = cmd(&dir)
+        .args(["import", path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("2 secret(s) added"));
+    cmd(&dir)
+        .args(["get", "ok"])
+        .assert()
+        .success()
+        .stdout("1\n");
+    cmd(&dir)
+        .args(["get", "BAD"])
+        .assert()
+        .success()
+        .stdout("C=D\n");
+}
+
+#[test]
+fn lockdown_denies_decryption() {
+    let dir = TempDir::new().unwrap();
+    seed(&dir);
+    cmd(&dir).arg("lockdown").assert().success();
+    let out = cmd(&dir).args(["get", "k"]).assert().failure();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("lockdown"));
+    // Metadata reads still work.
+    cmd(&dir).arg("list").assert().success();
+    let out = cmd(&dir).arg("status").assert().success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(stdout.contains("ENABLED"));
+    // Release restores access.
+    cmd(&dir).args(["lockdown", "--off"]).assert().success();
+    cmd(&dir)
+        .args(["get", "k"])
+        .assert()
+        .success()
+        .stdout(format!("{SECRET}\n"));
+}
+
 #[test]
 fn tampered_ciphertext_fails_safely() {
     let dir = TempDir::new().unwrap();

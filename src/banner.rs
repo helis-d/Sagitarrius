@@ -60,7 +60,16 @@ pub const MENU: &str = r#"
     audit                 Health check: short values, duplicates, bad names
 
   RUN
-    run -- <cmd> [...]    Run a command with secrets in its environment
+    run --secret N -- <cmd>  Run a command with only the named secrets
+
+  RESILIENCE
+    snapshot <cmd>        Encrypted local snapshots (create/list/verify/restore/delete)
+    backup <cmd>          Encrypted backups, retention, external targets
+    recovery <cmd>        Recovery code: create/verify/reset-password
+    file <cmd>            Encrypted files (put/get, chunked + authenticated)
+    migrate               Upgrade a v2 vault to v3 (VMK envelope)
+    status                Security status: integrity, recovery, backups
+    lockdown [--off]      Refuse all decryption until released
 "#;
 
 /// Print the launch screen: logo, title, tagline, menu, footer.
@@ -91,7 +100,8 @@ mod tests {
         // Guard against the menu drifting out of sync with cli.rs.
         for cmd in [
             "init", "passwd", "add", "gen", "get", "info", "list", "search", "exists", "edit",
-            "rename", "remove", "import", "export", "audit", "run", "menu",
+            "rename", "remove", "import", "export", "audit", "run", "menu", "migrate", "snapshot",
+            "backup", "recovery", "file", "status", "lockdown",
         ] {
             assert!(MENU.contains(cmd), "menu is missing `{cmd}`");
         }

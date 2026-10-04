@@ -1,5 +1,9 @@
 # Vault & cryptography
 
+> v3 (current) uses a VMK envelope + per-record keys. v2 files
+> (whole-payload AES-GCM) still open; `migrate` upgrades them. Full design:
+> [architecture.md](architecture.md).
+
 ## Vault location
 
 | OS | Path |

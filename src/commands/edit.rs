@@ -5,6 +5,7 @@ use crate::vault::Vault;
 use zeroize::Zeroize;
 
 pub fn run(name: String) -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     let _lock = VaultLock::acquire()?;
     let mut data = storage::read_vault()?;
 
@@ -19,6 +20,7 @@ pub fn run(name: String) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     if !vault.exists(&name) {
         return Err(SagitarriusError::SecretNotFound(name));
@@ -52,6 +54,7 @@ pub fn run(name: String) -> Result<i32> {
 
     let out = vault.serialize()?;
     storage::write_vault_atomic(&out)?;
+    crate::state::store_generation(&vault)?;
 
     eprintln!("Secret {name:?} updated.");
     Ok(0)

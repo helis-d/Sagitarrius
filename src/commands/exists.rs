@@ -18,6 +18,7 @@ pub fn run(name: String) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     Ok(if vault.exists(&name) { 0 } else { 1 })
 }

@@ -1,6 +1,6 @@
 [package]
 name = "sagitarrius"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.75"
 description = "Local-first secret manager for developers"
@@ -19,10 +19,12 @@ base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
 fs2 = "0.4"
+hkdf = "0.12"
 rand = "0.8"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "1"
 zeroize = { version = "1", features = ["derive"] }
 

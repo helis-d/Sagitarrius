@@ -5,10 +5,19 @@ use crate::vault::Vault;
 use std::process::Command;
 use zeroize::Zeroize;
 
-pub fn run(args: Vec<String>) -> Result<i32> {
+pub fn run(selected: Vec<String>, args: Vec<String>) -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     if args.is_empty() {
         return Err(SagitarriusError::Other(
-            "no command specified; usage: sagitarrius run -- <command> [args...]".into(),
+            "no command specified; usage: sagitarrius run --secret NAME -- <command> [args...]"
+                .into(),
+        ));
+    }
+    if selected.is_empty() {
+        // Fail closed: the vault is never exposed wholesale to a child.
+        // Name exactly what the child may see.
+        return Err(SagitarriusError::Other(
+            "no secrets selected; pass at least one --secret NAME (e.g. sagitarrius run --secret OPENAI_API_KEY -- ./app)".into(),
         ));
     }
 
@@ -25,6 +34,7 @@ pub fn run(args: Vec<String>) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     // Spawn the child directly. Never construct a shell string.
     let mut cmd = Command::new(&args[0]);
@@ -36,14 +46,25 @@ pub fn run(args: Vec<String>) -> Result<i32> {
     cmd.env_remove("SAGITARRIUS_PASSWORD");
     cmd.env_remove("SAGITARRIUS_NEW_PASSWORD");
 
-    for (mut k, mut v) in vault.secrets() {
-        if is_valid_env_name(&k) {
-            cmd.env(&k, &v);
-        } else {
-            eprintln!("Warning: skipping secret {k:?} (not a valid environment variable name)");
+    // Inject only the explicitly selected secrets. Anything else in the
+    // vault stays out of the child's environment (blast-radius control).
+    // Deduplicate so `--secret A --secret A` injects once.
+    let mut selected = selected;
+    selected.sort();
+    selected.dedup();
+    for mut name in selected {
+        let Some(value) = vault.get(&name) else {
+            return Err(SagitarriusError::SecretNotFound(name));
+        };
+        if !is_valid_env_name(&name) {
+            eprintln!("Warning: skipping secret {name:?} (not a valid environment variable name)");
+            name.zeroize();
+            continue;
         }
-        k.zeroize();
-        v.zeroize();
+        // `cmd.env` copies name/value into the child's env block; wipe our
+        // name copy. (`value` borrows the vault, which wipes itself on drop.)
+        cmd.env(&name, value);
+        name.zeroize();
     }
 
     let status = cmd.status()?;

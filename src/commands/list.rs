@@ -18,6 +18,7 @@ pub fn run() -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     let names = vault.names();
     // Header / footer to stderr; the actual names to stdout so the command
@@ -26,7 +27,7 @@ pub fn run() -> Result<i32> {
     eprintln!("Stored secrets:");
     eprintln!();
     for n in &names {
-        println!("{n}");
+        println!("{}", crate::vault::escape_name(n));
     }
     eprintln!();
     eprintln!(

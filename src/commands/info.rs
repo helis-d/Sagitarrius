@@ -5,6 +5,7 @@ use crate::vault::Vault;
 use zeroize::Zeroize;
 
 pub fn run(name: String) -> Result<i32> {
+    crate::storage::ensure_unlocked()?;
     let mut data = storage::read_vault()?;
 
     let mut password = input::master_password("Master password: ")?;
@@ -18,11 +19,15 @@ pub fn run(name: String) -> Result<i32> {
     };
     password.zeroize();
     data.zeroize();
+    crate::state::verify_generation(&vault)?;
 
     match vault.info(&name) {
         Some(info) => {
             println!("Secret Info:");
-            println!("  Name:              {}", info.name);
+            println!(
+                "  Name:              {}",
+                crate::vault::escape_name(&info.name)
+            );
             println!("  Length:            {} characters", info.length);
             println!("  Valid POSIX Env:   {}", info.is_valid_env_name);
             println!("  Created At:        {}", format_timestamp(info.created_at));
