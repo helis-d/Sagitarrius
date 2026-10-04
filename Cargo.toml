@@ -6,7 +6,7 @@ rust-version = "1.75"
 description = "Local-first secret manager for developers"
 license = "MIT"
 readme = "README.md"
-repository = "https://github.com/sagitarrius/sagitarrius"
+repository = "https://github.com/helis-d/Sagitarrius"
 
 [[bin]]
 name = "sagitarrius"
