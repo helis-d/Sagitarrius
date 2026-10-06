@@ -1,8 +1,49 @@
 # Installation
 
-Requirements: **Rust 1.75+** (via [rustup](https://rustup.rs)) and git.
+Requirements for source builds: **Rust 1.85+** (via [rustup](https://rustup.rs)) and git.
 
-## From source (recommended)
+Supported platforms and architectures:
+
+| OS | Architectures | Release artifact |
+|---|---|---|
+| Windows 10/11 | x86_64 | `sagitarrius-windows-x86_64.zip` |
+| Linux (glibc) | x86_64 | `sagitarrius-linux-x86_64.tar.gz` |
+| macOS 13+ | x86_64 (Intel) | `sagitarrius-macos-x86_64.tar.gz` |
+| macOS 14+ | aarch64 (Apple Silicon) | `sagitarrius-macos-aarch64.tar.gz` |
+
+(Linux ARM64 is not built yet — see the note in `.github/workflows/release.yml`.)
+
+## From a release binary (no Rust needed)
+
+1. Download the archive for your OS/arch from GitHub Releases plus
+   `SHA256SUMS.txt`, and verify the checksum.
+2. Unpack the single `sagitarrius` (or `sagitarrius.exe`) binary.
+
+### Windows (PowerShell)
+
+```powershell
+Expand-Archive sagitarrius-windows-x86_64.zip C:\Tools\sagitarrius
+$env:PATH += ";C:\Tools\sagitarrius"   # or set it permanently in Settings
+sagitarrius --help
+```
+
+### Linux
+
+```bash
+tar -xzf sagitarrius-linux-x86_64.tar.gz
+sudo install -m 0755 sagitarrius-linux-x86_64/sagitarrius /usr/local/bin/
+sagitarrius --help
+```
+
+### macOS
+
+```bash
+tar -xzf sagitarrius-macos-aarch64.tar.gz   # or -x86_64 on Intel
+sudo install -m 0755 sagitarrius-macos-*/sagitarrius /usr/local/bin/
+sagitarrius --help
+```
+
+## From source (any supported OS)
 
 ```bash
 git clone https://github.com/helis-d/Sagitarrius.git
@@ -10,21 +51,11 @@ cd Sagitarrius
 cargo install --path . --force
 ```
 
-After this, `sagitarrius` works in any terminal. Verify with a bare run —
-it shows the logo and the menu without touching anything:
+After either method, `sagitarrius` works in any terminal. Verify with a
+bare run — it shows the logo and the menu without touching anything:
 
 ```bash
 sagitarrius
-```
-
-## From a release binary
-
-No Rust needed. Take `sagitarrius.exe` (or the `sagitarrius` binary for your
-OS) from a release build (`cargo build --release` produces a single file
-under `target/release/`), put it somewhere on your `PATH`, and run:
-
-```bash
-sagitarrius --help
 ```
 
 ## Updating

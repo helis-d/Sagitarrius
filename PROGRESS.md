@@ -68,18 +68,20 @@
   not value, run refusal, opt-in injection). PASS.
 - docs/commands.md import/run rows updated.
 
-## F6 DONE — exit codes 0/1/2
+## F6 DONE — exit codes 0/1/2 (REVISED: see "exit-code revision" below)
 
-- New `Usage` error variant (exit 2); `main` maps it, everything else 1;
-  child codes pass through. Reclassified: empty/NUL search, unknown
-  `--kind`, file-kind via `add`, run no-command/no-secret/NUL/dangerous,
-  missing `--plaintext`, bad `gen` length, invalid secret names
-  (validate_secret_name; `EmptySecretName` variant removed as dead).
-  Operational failures (auth, not-found, lockdown, stale) stay 1;
-  `exists`/`search`-no-match/`audit` Ok(1) semantics unchanged.
-- `--help` gained an exit-code legend (`after_help`); docs/commands.md
-  exit-codes section rewritten. CLI test `exit_codes_usage_vs_operational`
-  covers both sides. PASS.
+- New `Usage` error variant; `main` maps errors to exit codes; child codes
+  pass through. `--help` gained an exit-code legend (`after_help`);
+  docs/commands.md exit-codes section rewritten. CLI test
+  `exit_codes_usage_vs_operational` covers both sides. PASS.
+
+## Exit-code revision (supersedes the F6 entry above; see DECISIONS.md D03b)
+
+- `1` ONLY for clean negatives (`exists` absent, `search` no match,
+  `audit` findings — all `Ok(1)`, never `Err`).
+- `2` for EVERY `Err` (auth, not-found, corruption, lockdown, stale, I/O,
+  usage). `--help` legend + docs rewritten; `get_missing` test updated
+  1 → 2; CLI test extended (wrong password, no vault, lockdown → 2).
 
 ## F7 DONE — min password length 12
 
@@ -131,20 +133,33 @@
   (115 crate dependencies)` → exit code **0** = no reported
   vulnerabilities in the locked tree.
 
-## Final gates (reopened Phase 1 complete)
+## Cross-platform + P1 review gaps (this session, branch v030-phase1)
 
-- `cargo fmt --check`: clean.
-- `cargo clippy --all-targets --all-features -- -D warnings`: clean on
-  stable 1.99.0 (the reviewer's `manual_strip` at vault.rs:996 does not
-  reproduce — likely line drift; gates are green either way).
-- `cargo test -j 2`: **113/113 green from actual output** (58 unit + 36
-  cli + 3 disaster + 15 security + 1 placeholder), incl. all pre-existing
-  tests unregressed. (Full parallel link OOMs this box: C: was at 0 bytes
-  free; freed 2.2 GiB via `cargo clean`, declined to touch 3.7 GiB of
-  foreign VS-installer temp, ran serial instead.)
-- Branch `v030-phase1` pushed (no direct commit to `main`).
-- Unix-only tests (sh-source, 2 symlink, unix dangerous-env block)
-  compile out on Windows; covered by Linux/macOS CI matrix.
+- §8 fixed: `run --allow-dangerous-env` now actually injects OS-legal
+  non-POSIX names (was silently skipped after the opt-in check); invalid
+  OS names (NUL/`=`) still refused. Denylist split into ELF/Mach-O/shell
+  groups with platform docs. Tests run `/usr/bin/env` (unix) and
+  `cmd /c set` (windows) — the old `sh -c env` dropped space-names.
+- §21 fixed: strip check moved before forward-heal; `has_manifest_mac`
+  monotonic. Regression test (strip + forged-high generation refused,
+  state not downgraded).
+- §22 fixed: `recovery verify`/`reset-password` enforce trusted-state
+  generation + strip checks after unwrap; verify-fail stays Ok(1),
+  integrity refusal is Err (exit 2). Regression test (stale + stripped).
+- §23: `VaultV2::serialize` enforces write caps pre-encrypt; §24: V2
+  import arm uses the denylist (was metachars-only) + fixture-driven test.
+- §6: default vs custom dir policy (`platform::is_custom_dir`), docs.
+- Release: `release.yml` matrix (linux/win/macos x64 + mac arm64),
+  tar.gz/zip packaging, SHA256SUMS job, draft publish on tags. Locally
+  verified on Windows: release build + zip + sha256 + smoke run
+  (init works; 1.8MB exe / 707KB zip).
+- Docs: README/installation 1.85+, per-OS install blocks, vault-location
+  table (§19), PowerShell quoting note, stale-claim sweep (F6 section,
+  "no backups", run/export wording, banner text untouched).
+- CI: `--locked` added to clippy/test; audit + msrv kept.
+- Gates from real output: fmt clean, clippy `-D warnings` clean,
+  `cargo test --locked -j 2` → **119/119** (59 unit + 41 cli + 3 disaster
+  + 15 security + 1 placeholder).
 
 ## F11 DONE — unicode names, empty env, export --force, dir perms, menu text
 

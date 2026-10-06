@@ -79,11 +79,27 @@ pub fn run(selected: Vec<String>, allow_dangerous_env: bool, args: Vec<String>) 
             value.zeroize();
             return Err(e);
         }
-        if !is_valid_env_name(&name) {
+        // Names the OS process API itself cannot carry (NUL, `=`) are
+        // refused even under opt-in — `Command::env` would fail on them.
+        if name.contains('\0') || name.contains('=') {
+            name.zeroize();
+            value.zeroize();
+            return Err(SagitarriusError::Usage(format!(
+                "secret name {name:?} cannot be placed in a process environment"
+            )));
+        }
+        if !is_valid_env_name(&name) && !allow_dangerous_env {
             eprintln!("Warning: skipping secret {name:?} (not a valid environment variable name)");
             name.zeroize();
             value.zeroize();
             continue;
+        }
+        if !is_valid_env_name(&name) {
+            // Explicit opt-in: the OS accepts the name, so inject it. Warn:
+            // shells cannot address it, only directly executed programs can.
+            eprintln!(
+                "Warning: injecting non-portable secret name {name:?} (--allow-dangerous-env)"
+            );
         }
         // `cmd.env` copies name/value into the child's env block; wipe both
         // of our copies afterwards.

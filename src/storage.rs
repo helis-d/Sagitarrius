@@ -255,20 +255,29 @@ pub fn write_state_atomic(data: &[u8]) -> Result<()> {
     write_file_atomic(&path, data)
 }
 
-/// Create `dir` if missing and tighten it — but NEVER chmod a directory
-/// the user already had with content in it. A pre-existing non-empty
-/// `SAGITARRIUS_VAULT_DIR` keeps its permissions verbatim (it may be a
-/// shared or deliberately-arranged location); only directories we create,
-/// or empty ones, get 0700 on unix.
+/// Create `dir` if missing and protect it — with a conservative split:
+///
+/// 1. Sagitarrius-managed default directory: always tightened to 0700 on
+///    unix (only tightening, never widening). An old default dir with
+///    weakened permissions is thereby repaired when safe.
+/// 2. Explicitly user-selected custom directory (`SAGITARRIUS_VAULT_DIR`):
+///    never chmodded. A pre-existing non-empty custom dir keeps its
+///    permissions verbatim; a missing/empty one is created (inheriting the
+///    parent's defaults) but not re-permissioned either.
+///
+/// Nothing here ever recursively chmods user content — only the single
+/// directory level Sagitarrius itself manages.
 fn ensure_dir_perms(dir: &Path) -> Result<()> {
+    let custom = crate::platform::is_custom_dir();
     let pre_existing_nonempty = dir.exists()
         && fs::read_dir(dir)
             .map(|mut d| d.next().is_some())
             .unwrap_or(false);
     fs::create_dir_all(dir)?;
-    if !pre_existing_nonempty {
-        set_dir_permissions(dir)?;
+    if custom && pre_existing_nonempty {
+        return Ok(());
     }
+    set_dir_permissions(dir)?;
     Ok(())
 }
 
