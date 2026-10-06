@@ -57,7 +57,11 @@ pub fn dispatch(cmd: Commands) -> Result<i32> {
             overwrite,
             allow_dangerous,
         } => import::run(path, overwrite, allow_dangerous),
-        Commands::Export { plaintext, path } => export::run(plaintext, path),
+        Commands::Export {
+            plaintext,
+            force,
+            path,
+        } => export::run(plaintext, force, path),
         Commands::Audit => audit::run(),
         Commands::Migrate => migrate::run(),
         Commands::Snapshot { action } => match action {

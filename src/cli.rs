@@ -8,12 +8,13 @@ use clap::{Parser, Subcommand};
     long_about = "Your secrets. Your machine. Your terminal.\n\
                   A tiny, local-first CLI secret manager for developers.",
     after_help = "Exit codes:\n  \
-                  0  success (note: `exists` uses 1 for 'absent', and `run`\n  \
-                  propagates its child process exit code)\n  \
-                  1  operational failure (wrong password, missing secret,\n  \
-                  tampered vault, lockdown, stale generation, ...)\n  \
-                  2  usage error (bad flags/values, missing --secret or\n  \
-                  --plaintext, invalid names)",
+                  0  success\n  \
+                  1  clean negative result only: `exists` absent,\n  \
+                  `search` with no matches, `audit` with findings\n  \
+                  2  any failure: wrong password, missing secret, corrupt or\n  \
+                  missing vault, lockdown, stale generation, usage errors\n  \
+                  (clap parse errors also exit 2; `run` propagates its\n  \
+                  child process exit code)",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -136,6 +137,9 @@ pub enum Commands {
         /// refuses, so scripts cannot decrypt the vault to disk by accident.
         #[arg(long, default_value_t = false)]
         plaintext: bool,
+        /// Allow overwriting an existing destination file (refused otherwise)
+        #[arg(long, default_value_t = false)]
+        force: bool,
         /// Optional destination file path (prints to stdout if omitted)
         path: Option<String>,
     },

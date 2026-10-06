@@ -14,6 +14,13 @@ pub enum SagitarriusError {
     #[error("invalid vault format")]
     InvalidVaultFormat,
 
+    #[error(
+        "vault metadata failed integrity check (manifest MAC mismatch); \
+         the record set or generation was modified outside Sagitarrius. \
+         Restore from a verified snapshot or backup"
+    )]
+    ManifestIntegrity,
+
     #[error("unsupported vault version: {0}")]
     UnsupportedVersion(u32),
 
@@ -45,20 +52,11 @@ pub enum SagitarriusError {
     Other(String),
 
     /// CLI usage errors: bad flags, bad values, missing required selections.
-    /// Exit code 2 (see `exit_code`). Clap's own parse errors also exit 2.
+    /// Like every other failure, these exit 2 (see `main`); clean negative
+    /// results (`exists` absent, `search` no match, `audit` findings) return
+    /// `Ok(1)` instead and never pass through here.
     #[error("{0}")]
     Usage(String),
-}
-
-impl SagitarriusError {
-    /// 0 = success (not an error), 1 = operational failure, 2 = usage error.
-    /// `run` child exit codes pass through untouched.
-    pub fn exit_code(&self) -> i32 {
-        match self {
-            SagitarriusError::Usage(_) => 2,
-            _ => 1,
-        }
-    }
 }
 
 pub type Result<T> = std::result::Result<T, SagitarriusError>;

@@ -64,6 +64,13 @@ pub fn run(
         v2.zeroize();
         return Err(SagitarriusError::EmptySecretValue);
     }
+    if v1.contains('\0') {
+        v1.zeroize();
+        v2.zeroize();
+        return Err(SagitarriusError::Usage(format!(
+            "secret {name:?} contains a NUL byte and cannot be stored"
+        )));
+    }
     if v1.len() > crate::vault::MAX_SECRET_VALUE_LEN {
         v1.zeroize();
         v2.zeroize();

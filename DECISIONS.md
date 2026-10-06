@@ -18,19 +18,31 @@ verified, fail closed). Documented in SECURITY.md.
   (e.g. `github-token`; common dotenv style).
 - DANGEROUS (refused): anything else — whitespace, shell metacharacters
   (`$ ` " ' \ | & ; < > ( ) * ? ! ~ #`), `=`, leading `-`, control chars.
-- `run --secret <dangerous>` errors unless `--allow-dangerous-env`.
-- `import` skips + warns on dangerous names unless `--allow-dangerous`
-  (portable-but-non-POSIX names import with a warning either way).
+- `run --secret <dangerous>` errors unless `--allow-dangerous-env`;
+  `import` skips + warns unless `--allow-dangerous`.
+  (Portable-but-non-POSIX names import silently; `audit` flags them.)
 
-## D03 — F6: exit-code split (decided)
+## D02b — loader/shell-startup denylist (decided, extends D02)
 
-- `0` success (incl. `exists` absent? No: `exists` keeps 0/1 presence
-  semantics — 1 there means "absent", not failure).
-- `1` operational failure: auth, not-found, validation, lockdown, stale.
-- `2` usage error: bad flags/values, empty query, unknown `--kind`,
-  missing `--secret`/`--plaintext`, invalid names at entry.
-- Child exit propagation in `run` unchanged. `search` no-match stays 1.
-- Pre-approved by the Phase 1 order (public-behavior change).
+Most denylisted names (`PATH`, `IFS`, `LD_PRELOAD`, ...) are valid POSIX
+identifiers, so the metacharacter rule misses them. Explicit exact-match
+denylist + `DYLD_` prefix, enforced exactly like dangerous names in `run`
+and `import`. Rationale: injecting `LD_PRELOAD` executes attacker code in
+the child; `BASH_ENV`/`ENV`/`IFS`/`PATH` hijack every spawned shell.
+
+## D03 — F6: exit-code split (SUPERSEDED by D03b below)
+
+Original split (0 ok / 1 operational / 2 usage) replaced: scripts cannot
+separate "negative" from "error" when both share code 1.
+
+## D03b — exit codes: negatives vs failures (decided, supersedes D03)
+
+- `0` success.
+- `1` ONLY for clean negatives: `exists` absent, `search` no matches,
+  `audit` findings. These return `Ok(1)`, never `Err`.
+- `2` for every `Err`: auth, not-found, corruption, lockdown, stale, I/O,
+  usage. `main` maps all errors to 2; `run` child codes pass through.
+- Pre-approved by the reopened Phase 1 order (public-behavior change).
 
 ## D04 — F8: trailing text after closing quote (decided)
 

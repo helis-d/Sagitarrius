@@ -6,7 +6,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use zeroize::Zeroize;
 
-pub fn run(plaintext: bool, path: Option<String>) -> Result<i32> {
+pub fn run(plaintext: bool, force: bool, path: Option<String>) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
     if !plaintext {
         // Fail closed: decrypting the vault to disk must be a deliberate,
@@ -22,6 +22,17 @@ pub fn run(plaintext: bool, path: Option<String>) -> Result<i32> {
         "Warning: exporting DECRYPTED secrets. The output is NOT protected by \
          the master password — handle and delete it carefully."
     );
+    // Refuse to clobber before asking for the password. This guards
+    // accidents (an existing file is never silently overwritten), not a
+    // determined filesystem race — symlink destinations are refused
+    // separately in write_plaintext_file.
+    if let Some(file_path) = path.as_ref() {
+        if !force && std::path::Path::new(file_path).exists() {
+            return Err(crate::error::SagitarriusError::Usage(format!(
+                "refusing to overwrite existing file {file_path:?}; pass --force to overwrite it"
+            )));
+        }
+    }
     let mut data = storage::read_vault()?;
 
     let mut password = input::master_password("Master password: ")?;
@@ -44,6 +55,7 @@ pub fn run(plaintext: bool, path: Option<String>) -> Result<i32> {
             // Plaintext secrets: never use `fs::write` (0644). Create with
             // 0600 on unix, truncate if it already exists, and tighten
             // existing files that may have looser permissions.
+            // (Parent dirs are created as-is below, never chmodded.)
             write_plaintext_file(&file_path, env_output.as_bytes())?;
             env_output.zeroize();
             if !skipped.is_empty() {

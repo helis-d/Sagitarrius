@@ -341,8 +341,9 @@ impl VaultV2 {
             };
 
             // Reject garbage that would spoof .env/terminal output or bypass
-            // the EmptySecretValue rule enforced by `add`/`edit`.
-            if key.is_empty() || val.is_empty() {
+            // the EmptySecretValue rule enforced by `add`/`edit`. NUL in
+            // values can never survive env vars or .env lines: skip.
+            if key.is_empty() || val.is_empty() || val.contains('\0') {
                 skipped += 1;
                 continue;
             }
@@ -692,6 +693,7 @@ impl Vault {
                     };
                     if key.is_empty()
                         || val.is_empty()
+                        || val.contains('\0')
                         || key.len() > MAX_SECRET_NAME_LEN
                         || val.len() > MAX_SECRET_VALUE_LEN
                         || validate_secret_name(key).is_err()
@@ -699,7 +701,7 @@ impl Vault {
                         skipped += 1;
                         continue;
                     }
-                    if !allow_dangerous && is_dangerous_name(key) {
+                    if !allow_dangerous && needs_dangerous_opt_in(key) {
                         skipped += 1;
                         dangerous.push(key.to_string());
                         continue;
@@ -910,10 +912,45 @@ pub(crate) fn is_dangerous_name(name: &str) -> bool {
     true
 }
 
+/// Exact loader/shell-startup names that must never be injected or imported
+/// by default: the dynamic loader (`LD_PRELOAD`, `LD_LIBRARY_PATH`,
+/// `LD_AUDIT`, `DYLD_*`) would execute attacker code in the child, and the
+/// shell-startup names (`BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
+/// `IFS`, `PATH`) hijack every spawned shell. Most are valid POSIX
+/// identifiers, so the metacharacter rule alone would miss them — hence an
+/// explicit denylist, enforced exactly like dangerous names.
+pub(crate) fn is_denylisted_env_name(name: &str) -> bool {
+    if name.starts_with("DYLD_") {
+        return true;
+    }
+    matches!(
+        name,
+        "LD_PRELOAD"
+            | "LD_LIBRARY_PATH"
+            | "LD_AUDIT"
+            | "BASH_ENV"
+            | "ENV"
+            | "SHELLOPTS"
+            | "BASHOPTS"
+            | "PS4"
+            | "IFS"
+            | "PATH"
+    )
+}
+
+/// Refused-by-default for `run`/`import` unless the corresponding
+/// `--allow-dangerous*` flag is given (NUL is always refused via
+/// `is_dangerous_name`).
+pub(crate) fn needs_dangerous_opt_in(name: &str) -> bool {
+    is_dangerous_name(name) || is_denylisted_env_name(name)
+}
+
 /// Structural validation for secret names. Deliberately permissive about
 /// dashes/dots (existing vaults and tests use `github-token`), but rejects
 /// what would spoof terminal/`.env` output or break the format:
-/// empty, over-long, `=`, newlines/NUL and other ASCII control codes.
+/// empty, over-long, `=`, newlines/NUL, ASCII controls, and invisible
+/// Unicode (C1 controls, bidi overrides, zero-width). Unlock never checks
+/// name content, so existing vaults keep opening.
 pub(crate) fn validate_secret_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(SagitarriusError::Usage(
@@ -930,12 +967,25 @@ pub(crate) fn validate_secret_name(name: &str) -> Result<()> {
         || name.contains('\r')
         || name.contains('\0')
         || name.chars().any(|c| c.is_ascii_control())
+        || name.chars().any(is_confusable_control)
     {
         return Err(SagitarriusError::Usage(format!(
             "invalid secret name {name:?}: must not contain '=', newlines or control characters"
         )));
     }
     Ok(())
+}
+
+/// Invisible/confusable Unicode in names: C1 controls U+0080–U+009F,
+/// bidi isolates/overrides U+202A–U+202E and U+2066–U+2069, zero-width
+/// U+200B–U+200D, U+2060 and U+FEFF.
+fn is_confusable_control(c: char) -> bool {
+    matches!(c,
+        '\u{0080}'..='\u{009F}'
+        | '\u{200B}'..='\u{200D}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2060}' | '\u{2066}'..='\u{2069}'
+        | '\u{FEFF}')
 }
 
 /// Bounds-check KDF parameters from the (still unauthenticated) header.
@@ -974,6 +1024,17 @@ fn validate_payload(payload: &Payload) -> Result<()> {
     Ok(())
 }
 
+/// Reject NUL in a secret VALUE before it can reach an environment block,
+/// a `.env` line or an error path. Names the secret, never the value (the
+/// OS-level "nul byte found" error must never surface instead).
+pub(crate) fn check_value_for_env(name: &str, value: &str) -> Result<()> {
+    if value.contains('\0') {
+        return Err(SagitarriusError::Usage(format!(
+            "secret {name:?} contains a NUL byte and cannot be used here"
+        )));
+    }
+    Ok(())
+}
 /// Terminal-safe rendering of secret names. Current write paths reject
 /// control characters, but vaults written by older versions may contain
 /// them — never emit raw ESC/C0 bytes to the terminal.
@@ -1303,6 +1364,96 @@ mod tests {
         let (added, _, _) = v.import_env("A=B=C\n", false, false);
         assert_eq!(added, 1);
         assert_eq!(v.get("A").as_deref(), Some("B=C"));
+    }
+
+    #[test]
+    fn env_value_nul_check_names_secret() {
+        // `run` must fail naming the secret, never the value (and never
+        // leak the OS "nul byte" error to the user).
+        let err = super::check_value_for_env("DBKEY", "a\0b").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("DBKEY"));
+        assert!(!msg.contains("a\0b"));
+        assert!(!msg.contains("nul byte found"));
+        assert!(super::check_value_for_env("DBKEY", "clean").is_ok());
+    }
+
+    #[test]
+    fn denylist_covers_loaders_and_shell_startup() {
+        for name in [
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_FALLBACK_LIBRARY_PATH",
+            "BASH_ENV",
+            "ENV",
+            "SHELLOPTS",
+            "BASHOPTS",
+            "PS4",
+            "IFS",
+            "PATH",
+        ] {
+            assert!(
+                super::is_denylisted_env_name(name),
+                "{name} must be denylisted"
+            );
+            assert!(
+                super::needs_dangerous_opt_in(name),
+                "{name} must need opt-in"
+            );
+        }
+        // Near-misses stay usable: case matters, prefixes must be exact.
+        for name in [
+            "MYPATH",
+            "path",
+            "LD_PRELOADED",
+            "XDYLD_FOO",
+            "ENV2",
+            "OPENAI_API_KEY",
+        ] {
+            assert!(
+                !super::is_denylisted_env_name(name),
+                "{name} must NOT be denylisted"
+            );
+        }
+        assert!(!super::needs_dangerous_opt_in("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn confusable_unicode_names_rejected_but_old_vaults_open() {
+        // Each class rejected on write paths...
+        for name in [
+            "a\u{0085}b", // C1 NEL
+            "a\u{202E}b", // bidi override
+            "a\u{2066}b", // bidi isolate
+            "a\u{200B}b", // zero width
+            "a\u{FEFF}b", // zero-width no-break space
+        ] {
+            assert!(
+                super::validate_secret_name(name).is_err(),
+                "{name:?} must be rejected"
+            );
+        }
+        // ...while ordinary Unicode letters stay usable...
+        for name in ["café", "日本語キー", "naïve-key_1"] {
+            assert!(
+                super::validate_secret_name(name).is_ok(),
+                "{name:?} must be accepted"
+            );
+        }
+        // ...and unlock never inspects name content (legacy compat): a v2
+        // payload carrying a bidi name still opens.
+        let mut p = Payload::default();
+        p.secrets.insert(
+            "a\u{202E}b".into(),
+            SecretEntry {
+                value: "v".into(),
+                created_at: 0,
+                updated_at: 0,
+            },
+        );
+        assert!(validate_payload(&p).is_ok());
     }
 
     #[test]

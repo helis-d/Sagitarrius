@@ -28,10 +28,10 @@ pub fn run(selected: Vec<String>, allow_dangerous_env: bool, args: Vec<String>) 
                 "invalid secret name {name:?}: must not contain NUL"
             )));
         }
-        if !allow_dangerous_env && crate::vault::is_dangerous_name(name) {
+        if !allow_dangerous_env && crate::vault::needs_dangerous_opt_in(name) {
             return Err(SagitarriusError::Usage(format!(
                 "refusing dangerous secret name {name:?} for environment injection \
-                 (whitespace or shell metacharacters); pass --allow-dangerous-env to inject it anyway"
+                 (loader/shell-startup name, whitespace or shell metacharacters); pass --allow-dangerous-env to inject it anyway"
             )));
         }
     }
@@ -68,18 +68,28 @@ pub fn run(selected: Vec<String>, allow_dangerous_env: bool, args: Vec<String>) 
     selected.sort();
     selected.dedup();
     for mut name in selected {
-        let Some(value) = vault.get(&name) else {
+        let Some(mut value) = vault.get(&name) else {
             return Err(SagitarriusError::SecretNotFound(name));
         };
+        // A NUL value (legacy vaults only — write paths reject them) can
+        // never enter an environment block: fail naming the secret, never
+        // the value, instead of the OS "nul byte found" error.
+        if let Err(e) = crate::vault::check_value_for_env(&name, &value) {
+            name.zeroize();
+            value.zeroize();
+            return Err(e);
+        }
         if !is_valid_env_name(&name) {
             eprintln!("Warning: skipping secret {name:?} (not a valid environment variable name)");
             name.zeroize();
+            value.zeroize();
             continue;
         }
-        // `cmd.env` copies name/value into the child's env block; wipe our
-        // name copy. (`value` borrows the vault, which wipes itself on drop.)
-        cmd.env(&name, value);
+        // `cmd.env` copies name/value into the child's env block; wipe both
+        // of our copies afterwards.
+        cmd.env(&name, &value);
         name.zeroize();
+        value.zeroize();
     }
 
     let status = cmd.status()?;

@@ -99,6 +99,17 @@
   green; also caught my own count mistake: 6 valid, not 5).
 - docs/commands.md import row documents the exact rules.
 
+## F10 DONE — missing-state warning + MAC error message
+
+- `state::verify_generation`: state file missing + generation > 1 →
+  stderr warning ("no trusted state... freshness cannot be confirmed") +
+  adopt (still works). `status` already showed "UNKNOWN (no trusted
+  state yet)".
+- New `ManifestIntegrity` error variant: MAC failure says "vault metadata
+  failed integrity check" + points at snapshot restore (was generic
+  "invalid vault format").
+- CLI test `missing_state_warns_mac_failure_explains` covers both. PASS.
+
 ## F9 DONE — real MSRV 1.85 + CI
 
 - Probed locally: `cargo +1.75 check --locked` FAILS (locked
@@ -107,23 +118,44 @@
   --locked --all-targets` + `cargo +1.85 build --locked` PASS.
 - `rust-version` set to `1.85` (was a fictional 1.75).
 - CI: new `msrv` job (toolchain 1.85, locked check); `audit` job kept.
-  `cargo audit` not run locally (installer compile too heavy for the
-  session; CI covers it).
 
-## Final gates (Phase 1 complete)
+## cargo audit — run for real (2026-10-05)
+
+- `cargo install cargo-audit --locked` FAILED locally (C: disk full,
+  os error 112 unpacking aws-lc-sys). Freed 2.2 GiB via `cargo clean`
+  (target/ is regenerable), then used the official prebuilt
+  `cargo-audit-x86_64-pc-windows-msvc-v0.22.2` release binary instead.
+- Verbatim output (`cargo-audit 0.22.2`):
+  `Fetching advisory database ... Loaded 1290 security advisories ...
+  Updating crates.io index ... Scanning Cargo.lock for vulnerabilities
+  (115 crate dependencies)` → exit code **0** = no reported
+  vulnerabilities in the locked tree.
+
+## Final gates (reopened Phase 1 complete)
 
 - `cargo fmt --check`: clean.
-- `cargo clippy --all-targets --all-features -- -D warnings`: clean.
-- `cargo test`: **105/105 green** (55 unit + 31 cli + 3 disaster + 15
-  security + 1 placeholder), incl. all pre-existing tests unregressed.
-- New tests this session: 5 MAC unit + MAC CLI + 2 F2 unit + write-cap CLI
-  + quotes/property unit (+ unix sh-source, runs on Linux CI) + dangerous
-  unit/CLI + exit-codes CLI + short-password CLI + BOM unit.
+- `cargo clippy --all-targets --all-features -- -D warnings`: clean on
+  stable 1.99.0 (the reviewer's `manual_strip` at vault.rs:996 does not
+  reproduce — likely line drift; gates are green either way).
+- `cargo test -j 2`: **113/113 green from actual output** (58 unit + 36
+  cli + 3 disaster + 15 security + 1 placeholder), incl. all pre-existing
+  tests unregressed. (Full parallel link OOMs this box: C: was at 0 bytes
+  free; freed 2.2 GiB via `cargo clean`, declined to touch 3.7 GiB of
+  foreign VS-installer temp, ran serial instead.)
 - Branch `v030-phase1` pushed (no direct commit to `main`).
-- Unix-only tests (sh-sourcing, symlink tests from before) compile out on
-  Windows; covered by Linux/macOS CI matrix.
+- Unix-only tests (sh-source, 2 symlink, unix dangerous-env block)
+  compile out on Windows; covered by Linux/macOS CI matrix.
 
-## F2 DONE — write caps pre-write, higher read caps
+## F11 DONE — unicode names, empty env, export --force, dir perms, menu text
 
-- TDD: `read_caps_open_oversized_for_shrinking` + 
-...[truncated 911 chars]
+- `validate_secret_name` rejects C1 (U+0080–009F), bidi (U+202A–202E,
+  U+2066–2069), zero-width (U+200B–200D, U+2060, U+FEFF); ordinary Unicode
+  letters still accepted; unlock never checks names (legacy opens).
+  Unit test covers all classes + legacy-open.
+- Empty `SAGITARRIUS_PASSWORD`/`SAGITARRIUS_NEW_PASSWORD` treated as unset
+  (falls through to interactive); CLI test with piped passwords.
+- `export <path>` refuses existing destinations without new `--force`.
+  CLI test covers refuse + force paths.
+- `ensure_dir_perms`: pre-existing non-empty dirs keep permissions;
+  only created/empty dirs get 0700 (unix test with 0755 + marker file).
+- Banner passwd line fixed (no longer claims env is required).

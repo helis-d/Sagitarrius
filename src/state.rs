@@ -42,7 +42,17 @@ pub fn verify_generation(vault: &Vault) -> Result<()> {
     }
     let path = state_path()?;
     if !path.exists() {
-        // First contact: adopt the current file as trusted.
+        // First contact: adopt the current file as trusted. But a vault
+        // past generation 1 with no state is suspicious (wiped state dir,
+        // rolled-back restore): say so instead of silently trusting.
+        if vault.is_v3() && vault.generation() > 1 {
+            eprintln!(
+                "Warning: no trusted state for generation {} — freshness \
+                 cannot be confirmed. Adopting current state; verify with \
+                 `sagitarrius snapshot verify` and keep offline backups.",
+                vault.generation()
+            );
+        }
         return store_generation(vault);
     }
     let raw = std::fs::read(&path)?;

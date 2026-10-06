@@ -78,9 +78,9 @@ pub fn compute_mac(key: &DerivedKey, message: &[u8]) -> Vec<u8> {
     mac.finalize().into_bytes().to_vec()
 }
 
-/// Constant-time MAC check. Failure collapses to `InvalidVaultFormat`
-/// (metadata tamper, not a password error — wrong passwords already fail at
-/// the wrap unwrap step before this runs).
+/// Constant-time MAC check. Failure means metadata tamper (wrong passwords
+/// already fail at the wrap-unwrap step before this runs), so it reports a
+/// dedicated integrity error pointing at snapshot restore.
 pub fn verify_mac(key: &DerivedKey, message: &[u8], tag: &[u8]) -> Result<()> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
@@ -88,7 +88,7 @@ pub fn verify_mac(key: &DerivedKey, message: &[u8], tag: &[u8]) -> Result<()> {
         Hmac::<Sha256>::new_from_slice(key.as_bytes()).expect("HMAC takes any key length");
     mac.update(message);
     mac.verify_slice(tag)
-        .map_err(|_| SagitarriusError::InvalidVaultFormat)
+        .map_err(|_| SagitarriusError::ManifestIntegrity)
 }
 /// Wrap (encrypt) the VMK under a KEK. Returns (nonce, wrapped).
 pub fn wrap_vmk(

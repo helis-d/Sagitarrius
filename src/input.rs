@@ -57,8 +57,12 @@ pub fn master_password(prompt: &str) -> Result<String> {
     if PASSWORD_FROM_STDIN.load(Ordering::SeqCst) {
         return read_stdin_line();
     }
+    // An empty variable is the same as unset (avoids a silent empty
+    // password and the confusing error it would cause downstream).
     if let Ok(pw) = std::env::var("SAGITARRIUS_PASSWORD") {
-        return Ok(pw);
+        if !pw.is_empty() {
+            return Ok(pw);
+        }
     }
     read_secret(prompt)
 }

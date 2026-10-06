@@ -22,8 +22,7 @@ pub struct VaultLock {
 impl VaultLock {
     pub fn acquire() -> Result<Self> {
         let dir = platform::vault_dir()?;
-        fs::create_dir_all(&dir)?;
-        set_dir_permissions(&dir)?;
+        ensure_dir_perms(&dir)?;
         let path = platform::lock_path()?;
         let mut opts = OpenOptions::new();
         opts.create(true).read(true).write(true).truncate(false);
@@ -142,8 +141,7 @@ pub fn write_vault_atomic(data: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| SagitarriusError::Other("vault path has no parent".into()))?;
-    fs::create_dir_all(dir)?;
-    set_dir_permissions(dir)?;
+    ensure_dir_perms(dir)?;
 
     let unique = format!(
         ".vault-{}-{}.tmp",
@@ -209,8 +207,7 @@ pub fn write_file_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| SagitarriusError::Other("path has no parent".into()))?;
-    fs::create_dir_all(dir)?;
-    set_dir_permissions(dir)?;
+    ensure_dir_perms(dir)?;
 
     let unique = format!(
         ".tmp-{}-{}.tmp",
@@ -256,6 +253,23 @@ pub fn write_file_atomic(path: &Path, data: &[u8]) -> Result<()> {
 pub fn write_state_atomic(data: &[u8]) -> Result<()> {
     let path = platform::vault_dir()?.join("state.json");
     write_file_atomic(&path, data)
+}
+
+/// Create `dir` if missing and tighten it — but NEVER chmod a directory
+/// the user already had with content in it. A pre-existing non-empty
+/// `SAGITARRIUS_VAULT_DIR` keeps its permissions verbatim (it may be a
+/// shared or deliberately-arranged location); only directories we create,
+/// or empty ones, get 0700 on unix.
+fn ensure_dir_perms(dir: &Path) -> Result<()> {
+    let pre_existing_nonempty = dir.exists()
+        && fs::read_dir(dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+    fs::create_dir_all(dir)?;
+    if !pre_existing_nonempty {
+        set_dir_permissions(dir)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

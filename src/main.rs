@@ -30,8 +30,12 @@ fn main() {
     match commands::dispatch(command) {
         Ok(code) => std::process::exit(code),
         Err(e) => {
+            // Every failure exits 2 — wrong password, corruption, lockdown,
+            // usage errors alike. Clean negatives never reach here: `exists`
+            // (absent), `search` (no match) and `audit` (findings) return
+            // Ok(1). `run` child codes pass through untouched.
             eprintln!("Error: {e}");
-            std::process::exit(e.exit_code());
+            std::process::exit(2);
         }
     }
 }
