@@ -8,9 +8,14 @@ in scripts).
 
 ## Exit codes
 
-- `0` — success
-- `1` — general / user error (missing secret, wrong password, etc.)
-- Any other code — propagated from `sagitarrius run`'s child process
+- `0` — success.
+- `1` — clean negative result only: `exists` for an absent secret,
+  `search` with no matches, `audit` with findings.
+- `2` — every failure: wrong password, missing secret, corrupt or missing
+  vault, lockdown refusal, stale generation, I/O errors, and all usage
+  errors (bad flags/values, empty query, unknown `--kind`, missing
+  `--secret`/`--plaintext`, invalid names). Clap parse errors also exit 2.
+- Any other code — propagated from `sagitarrius run`'s child process.
 
 ## Vault
 
@@ -51,8 +56,8 @@ characters. Values must not be empty (whitespace-only counts as empty).
 
 | Command | Description |
 |---|---|
-| `import <file> [--overwrite]` | Import secrets from a `.env` file. Without `--overwrite`, existing names are skipped and counted. Lines without `=`, empty keys/values, and over-long entries are skipped and counted. |
-| `export --plaintext [file]` | Export secrets in `.env` format — to stdout, or to a file (written atomically with `0600` permissions on Unix; symlinks at the destination are refused). `--plaintext` is **required**: decrypting to disk must be deliberate. Values needing it are quoted so re-import round-trips. Only single-value kinds and valid env names export; the rest are listed as skipped. |
+| `import <file> [--overwrite] [--allow-dangerous]` | Import secrets from a `.env` file. A UTF-8 BOM is stripped. `#` starts an inline comment only outside quotes and after whitespace (`a#b` stays). Text after a closing quote must be blank or a comment, else the entry is skipped. Without `--overwrite`, existing names are skipped and counted. Lines without `=`, empty keys/values, over-long entries, and control-char names are skipped and counted. Names with spaces/shell metacharacters are skipped with a warning unless `--allow-dangerous`. |
+| `export --plaintext [--force] [file]` | Export secrets in `.env` format — to stdout, or to a file (written atomically with `0600` permissions on Unix; symlinks at the destination are refused). `--plaintext` is **required**: decrypting to disk must be deliberate. An existing destination file is never overwritten without `--force`. Quoting is shell-safe: single quotes when possible, else double quotes escaping `\ " $ ` and newline — sourceable by POSIX `sh`, and re-import round-trips byte-for-byte. Only single-value kinds and valid env names export; the rest are listed as skipped. |
 | `audit` | Health check: short values (< 8 chars, rough signal only), duplicate values (grouped), invalid env names. Exits 1 when issues are found. |
 
 ## Resilience
@@ -76,7 +81,12 @@ sagitarrius run --secret OPENAI_API_KEY -- python app.py   # os.getenv(...)
 ```
 
 Only `--secret` names are injected — the default is nothing, never the
-whole vault. Repeat `--secret` for more than one.
+whole vault. Repeat `--secret` for more than one. Loader and shell-startup
+names (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `DYLD_*`, `BASH_ENV`,
+`ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `IFS`, `PATH`) and names with
+whitespace or shell metacharacters are refused unless
+`--allow-dangerous-env`; NUL is always refused. Errors name the secret,
+never the value.
 
 How names map to environment variables:
 

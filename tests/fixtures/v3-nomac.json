@@ -1,0 +1,34 @@
+{
+  "header": {
+    "magic": "SAGITARRIUS",
+    "version": 3,
+    "vault_id": "+A7YrdUXRDgfCv+4icGrdA==",
+    "generation": 1,
+    "kdf": "argon2id",
+    "wraps": [
+      {
+        "kind": "password",
+        "kdf_params": {
+          "m_cost": 65536,
+          "t_cost": 3,
+          "p_cost": 4
+        },
+        "salt": "lOUPvKJy6VOBZzYrV/Za9Q==",
+        "nonce": "mIvcKa+eVVZElt+0",
+        "wrapped": "zqgB+NYx6bf9SEBZK00Xp+yV32eWJ8opAHuzDiO9HCgy+WCUsxrRe8gLyiCeGzIP"
+      }
+    ],
+    "manifest_mac": null
+  },
+  "records": [
+    {
+      "id": "HKooY6f8J3Y2BfPtNNPfcQ==",
+      "name": "OLDREC",
+      "kind": "secret",
+      "created_at": 1791216204,
+      "updated_at": 1791216204,
+      "nonce": "IX4pbCfiHQytOGNW",
+      "ciphertext": "HU4OF+5VAYbFIa6aZgD4qQ9QzsqdSk/oduP2o2pu+Sx7FjcL2VwM6LCXia3yZx6/"
+    }
+  ]
+}

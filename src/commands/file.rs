@@ -25,6 +25,11 @@ fn v3_parts(vault: &Vault) -> Result<(&VaultMasterKey, &str)> {
 
 pub fn put(path: String, name: Option<String>) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
+    if path.contains('\0') {
+        return Err(SagitarriusError::Usage(
+            "file path must not contain NUL".into(),
+        ));
+    }
     let src = PathBuf::from(&path);
     let name = name.unwrap_or_else(|| {
         src.file_name()
@@ -78,6 +83,11 @@ pub fn put(path: String, name: Option<String>) -> Result<i32> {
 
 pub fn get(name: String, dest: String) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
+    if dest.contains('\0') {
+        return Err(SagitarriusError::Usage(
+            "destination path must not contain NUL".into(),
+        ));
+    }
     let dest = PathBuf::from(&dest);
     let data = storage::read_vault()?;
     let mut password = input::master_password("Master password: ")?;

@@ -22,19 +22,25 @@ pub fn run() -> Result<i32> {
     data.zeroize();
     crate::state::verify_generation(&vault)?;
 
-    let mut new_pw1 = match std::env::var("SAGITARRIUS_NEW_PASSWORD") {
-        Ok(nw) if !nw.is_empty() => nw,
-        Ok(_) => {
-            return Err(SagitarriusError::EmptyPassword);
-        }
-        Err(_) => input::read_secret("Enter new master password: ")?,
+    // Empty SAGITARRIUS_NEW_PASSWORD counts as unset (falls through to the
+    // interactive prompt) instead of erroring: no silent empty passwords,
+    // no surprising failures in wrappers that always export the variable.
+    let new_from_env = matches!(
+        std::env::var("SAGITARRIUS_NEW_PASSWORD"),
+        Ok(ref v) if !v.is_empty()
+    );
+    let mut new_pw1 = if new_from_env {
+        // Safe: just matched non-empty above.
+        std::env::var("SAGITARRIUS_NEW_PASSWORD").unwrap_or_default()
+    } else {
+        input::read_secret("Enter new master password: ")?
     };
     if new_pw1.is_empty() {
         new_pw1.zeroize();
         return Err(SagitarriusError::EmptyPassword);
     }
 
-    let mut new_pw2 = if std::env::var("SAGITARRIUS_NEW_PASSWORD").is_ok() {
+    let mut new_pw2 = if new_from_env {
         new_pw1.clone()
     } else {
         input::read_secret("Confirm new master password: ")?
@@ -46,6 +52,11 @@ pub fn run() -> Result<i32> {
         return Err(SagitarriusError::PasswordMismatch);
     }
     new_pw2.zeroize();
+
+    if let Err(e) = input::check_new_password(&new_pw1) {
+        new_pw1.zeroize();
+        return Err(e);
+    }
 
     vault.change_password(&new_pw1)?;
     new_pw1.zeroize();

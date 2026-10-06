@@ -695,6 +695,7 @@ dependencies = [
  "directories",
  "fs2",
  "hkdf",
+ "hmac",
  "predicates",
  "rand",
  "rpassword",

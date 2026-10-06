@@ -14,12 +14,12 @@ pub fn run(
     crate::vault::validate_secret_name(&name)?;
     crate::storage::ensure_unlocked()?;
     let kind = crate::vault_v3::RecordKind::parse(&kind).ok_or_else(|| {
-        SagitarriusError::Other(
+        SagitarriusError::Usage(
             "unknown --kind (expected secret|password|note|credential|document)".into(),
         )
     })?;
     if kind == crate::vault_v3::RecordKind::File {
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "file records are created with `sagitarrius file put <path>`".into(),
         ));
     }
@@ -63,6 +63,13 @@ pub fn run(
         v1.zeroize();
         v2.zeroize();
         return Err(SagitarriusError::EmptySecretValue);
+    }
+    if v1.contains('\0') {
+        v1.zeroize();
+        v2.zeroize();
+        return Err(SagitarriusError::Usage(format!(
+            "secret {name:?} contains a NUL byte and cannot be stored"
+        )));
     }
     if v1.len() > crate::vault::MAX_SECRET_VALUE_LEN {
         v1.zeroize();

@@ -5,10 +5,10 @@ use crate::vault::Vault;
 use std::process::Command;
 use zeroize::Zeroize;
 
-pub fn run(selected: Vec<String>, args: Vec<String>) -> Result<i32> {
+pub fn run(selected: Vec<String>, allow_dangerous_env: bool, args: Vec<String>) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
     if args.is_empty() {
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "no command specified; usage: sagitarrius run --secret NAME -- <command> [args...]"
                 .into(),
         ));
@@ -16,9 +16,24 @@ pub fn run(selected: Vec<String>, args: Vec<String>) -> Result<i32> {
     if selected.is_empty() {
         // Fail closed: the vault is never exposed wholesale to a child.
         // Name exactly what the child may see.
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "no secrets selected; pass at least one --secret NAME (e.g. sagitarrius run --secret OPENAI_API_KEY -- ./app)".into(),
         ));
+    }
+    // NUL can never survive into an environment block: reject up front,
+    // flag or not. Errors name the secret, never the value.
+    for name in &selected {
+        if name.contains('\0') {
+            return Err(SagitarriusError::Usage(format!(
+                "invalid secret name {name:?}: must not contain NUL"
+            )));
+        }
+        if !allow_dangerous_env && crate::vault::needs_dangerous_opt_in(name) {
+            return Err(SagitarriusError::Usage(format!(
+                "refusing dangerous secret name {name:?} for environment injection \
+                 (loader/shell-startup name, whitespace or shell metacharacters); pass --allow-dangerous-env to inject it anyway"
+            )));
+        }
     }
 
     let mut data = storage::read_vault()?;
@@ -53,18 +68,28 @@ pub fn run(selected: Vec<String>, args: Vec<String>) -> Result<i32> {
     selected.sort();
     selected.dedup();
     for mut name in selected {
-        let Some(value) = vault.get(&name) else {
+        let Some(mut value) = vault.get(&name) else {
             return Err(SagitarriusError::SecretNotFound(name));
         };
+        // A NUL value (legacy vaults only — write paths reject them) can
+        // never enter an environment block: fail naming the secret, never
+        // the value, instead of the OS "nul byte found" error.
+        if let Err(e) = crate::vault::check_value_for_env(&name, &value) {
+            name.zeroize();
+            value.zeroize();
+            return Err(e);
+        }
         if !is_valid_env_name(&name) {
             eprintln!("Warning: skipping secret {name:?} (not a valid environment variable name)");
             name.zeroize();
+            value.zeroize();
             continue;
         }
-        // `cmd.env` copies name/value into the child's env block; wipe our
-        // name copy. (`value` borrows the vault, which wipes itself on drop.)
-        cmd.env(&name, value);
+        // `cmd.env` copies name/value into the child's env block; wipe both
+        // of our copies afterwards.
+        cmd.env(&name, &value);
         name.zeroize();
+        value.zeroize();
     }
 
     let status = cmd.status()?;

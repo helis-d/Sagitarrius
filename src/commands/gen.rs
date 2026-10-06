@@ -11,12 +11,12 @@ pub fn run(name: String, length: usize, no_symbols: bool) -> Result<i32> {
     const MAX_GENERATED_SECRET_LEN: usize = 4096;
     crate::vault::validate_secret_name(&name)?;
     if length == 0 {
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "generated secret length must be greater than 0".into(),
         ));
     }
     if length > MAX_GENERATED_SECRET_LEN {
-        return Err(SagitarriusError::Other(format!(
+        return Err(SagitarriusError::Usage(format!(
             "generated secret length must be at most {MAX_GENERATED_SECRET_LEN}"
         )));
     }

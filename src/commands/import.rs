@@ -5,7 +5,7 @@ use crate::vault::Vault;
 use std::fs;
 use zeroize::Zeroize;
 
-pub fn run(path: String, overwrite: bool) -> Result<i32> {
+pub fn run(path: String, overwrite: bool, allow_dangerous: bool) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
     // Bound memory use before reading an attacker-influenced file.
     let import_meta = fs::metadata(&path)?;
@@ -44,8 +44,15 @@ pub fn run(path: String, overwrite: bool) -> Result<i32> {
     data.zeroize();
     crate::state::verify_generation(&vault)?;
 
-    let (added, skipped) = vault.import_env(&env_content, overwrite);
+    let (added, skipped, dangerous) = vault.import_env(&env_content, overwrite, allow_dangerous);
     env_content.zeroize();
+
+    for name in &dangerous {
+        eprintln!(
+            "Warning: skipped dangerous secret name {} (use --allow-dangerous to import it anyway)",
+            crate::vault::escape_name(name)
+        );
+    }
 
     if added > 0 {
         let out = vault.serialize()?;

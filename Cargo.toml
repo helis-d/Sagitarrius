@@ -2,7 +2,7 @@
 name = "sagitarrius"
 version = "0.2.1"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.85"
 description = "Local-first secret manager for developers"
 license = "MIT"
 readme = "README.md"
@@ -20,6 +20,7 @@ clap = { version = "4", features = ["derive"] }
 directories = "5"
 fs2 = "0.4"
 hkdf = "0.12"
+hmac = "0.12"
 rand = "0.8"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }

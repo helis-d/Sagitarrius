@@ -14,6 +14,13 @@ pub enum SagitarriusError {
     #[error("invalid vault format")]
     InvalidVaultFormat,
 
+    #[error(
+        "vault metadata failed integrity check (manifest MAC mismatch); \
+         the record set or generation was modified outside Sagitarrius. \
+         Restore from a verified snapshot or backup"
+    )]
+    ManifestIntegrity,
+
     #[error("unsupported vault version: {0}")]
     UnsupportedVersion(u32),
 
@@ -22,9 +29,6 @@ pub enum SagitarriusError {
 
     #[error("secret {0:?} already exists")]
     SecretAlreadyExists(String),
-
-    #[error("secret name must not be empty")]
-    EmptySecretName,
 
     #[error("secret value must not be empty")]
     EmptySecretValue,
@@ -46,6 +50,13 @@ pub enum SagitarriusError {
 
     #[error("{0}")]
     Other(String),
+
+    /// CLI usage errors: bad flags, bad values, missing required selections.
+    /// Like every other failure, these exit 2 (see `main`); clean negative
+    /// results (`exists` absent, `search` no match, `audit` findings) return
+    /// `Ok(1)` instead and never pass through here.
+    #[error("{0}")]
+    Usage(String),
 }
 
 pub type Result<T> = std::result::Result<T, SagitarriusError>;

@@ -62,7 +62,14 @@ Full statement: [docs/threat-model.md](docs/threat-model.md).
   per-chunk AAD + SHA-256 cross-check.
 - **Wraps:** AES-256-GCM; AAD binds magic, version, vault id, wrap kind,
   KDF params, salt.
-- **No primitive is hand-rolled.** `argon2`, `aes-gcm`, `hkdf`, `sha2`.
+- **Manifest MAC:** HMAC-SHA256 under an HKDF-derived manifest key over a
+  canonical length-prefixed encoding of vault id, generation and every
+  record's (id, name, kind, timestamps, nonce). Verified after every
+  unlock; recomputed on every write. Record names stay plaintext by design
+  (listing without full decryption); set-membership tampering is what the
+  MAC covers.
+- **No primitive is hand-rolled.** `argon2`, `aes-gcm`, `hkdf`, `hmac`,
+  `sha2`.
 
 ## Master password model
 

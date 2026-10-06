@@ -6,8 +6,13 @@ use zeroize::Zeroize;
 
 pub fn run(query: String) -> Result<i32> {
     if query.is_empty() {
-        return Err(crate::error::SagitarriusError::Other(
+        return Err(crate::error::SagitarriusError::Usage(
             "search query must not be empty".into(),
+        ));
+    }
+    if query.contains('\0') {
+        return Err(crate::error::SagitarriusError::Usage(
+            "search query must not contain NUL".into(),
         ));
     }
     let mut data = storage::read_vault()?;

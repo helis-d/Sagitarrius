@@ -40,7 +40,7 @@ pub const MENU: &str = r#"
 
   VAULT
     init                  Create a new encrypted vault
-    passwd                Change the master password (needs SAGITARRIUS_NEW_PASSWORD)
+    passwd                Change the master password
 
   SECRETS
     add <name> [value]    Add a secret (interactive entry is preferred)

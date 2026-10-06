@@ -7,6 +7,14 @@ use clap::{Parser, Subcommand};
     about = "Sagitarrius — local-first secret manager",
     long_about = "Your secrets. Your machine. Your terminal.\n\
                   A tiny, local-first CLI secret manager for developers.",
+    after_help = "Exit codes:\n  \
+                  0  success\n  \
+                  1  clean negative result only: `exists` absent,\n  \
+                  `search` with no matches, `audit` with findings\n  \
+                  2  any failure: wrong password, missing secret, corrupt or\n  \
+                  missing vault, lockdown, stale generation, usage errors\n  \
+                  (clap parse errors also exit 2; `run` propagates its\n  \
+                  child process exit code)",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -118,6 +126,9 @@ pub enum Commands {
         /// Overwrite existing secret values if present
         #[arg(short, long, default_value_t = false)]
         overwrite: bool,
+        /// Import names with shell-dangerous characters too (skipped otherwise)
+        #[arg(long, default_value_t = false)]
+        allow_dangerous: bool,
     },
 
     /// Export stored secrets in .env format (PLAINTEXT — see warning)
@@ -126,6 +137,9 @@ pub enum Commands {
         /// refuses, so scripts cannot decrypt the vault to disk by accident.
         #[arg(long, default_value_t = false)]
         plaintext: bool,
+        /// Allow overwriting an existing destination file (refused otherwise)
+        #[arg(long, default_value_t = false)]
+        force: bool,
         /// Optional destination file path (prints to stdout if omitted)
         path: Option<String>,
     },
@@ -176,6 +190,9 @@ pub enum Commands {
         /// Secret name to inject. Repeatable. At least one is required.
         #[arg(long = "secret")]
         secret: Vec<String>,
+        /// Inject names with shell-dangerous characters too (refused otherwise)
+        #[arg(long, default_value_t = false)]
+        allow_dangerous_env: bool,
         /// Command and arguments (typically after `--`)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,

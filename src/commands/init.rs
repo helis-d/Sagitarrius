@@ -40,6 +40,11 @@ pub fn run() -> Result<i32> {
     }
     pw2.zeroize();
 
+    if let Err(e) = input::check_new_password(&pw1) {
+        pw1.zeroize();
+        return Err(e);
+    }
+
     let mut vault = Vault::create(&pw1)?;
     pw1.zeroize();
 

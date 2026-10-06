@@ -22,8 +22,7 @@ pub struct VaultLock {
 impl VaultLock {
     pub fn acquire() -> Result<Self> {
         let dir = platform::vault_dir()?;
-        fs::create_dir_all(&dir)?;
-        set_dir_permissions(&dir)?;
+        ensure_dir_perms(&dir)?;
         let path = platform::lock_path()?;
         let mut opts = OpenOptions::new();
         opts.create(true).read(true).write(true).truncate(false);
@@ -102,15 +101,15 @@ pub fn ensure_unlocked() -> Result<()> {
 }
 
 pub fn read_vault() -> Result<Vec<u8>> {
-    use crate::vault::MAX_VAULT_FILE_SIZE;
+    use crate::vault::READ_MAX_VAULT_FILE_SIZE;
     let path = platform::vault_path()?;
     if !path.exists() {
         return Err(SagitarriusError::NotInitialized);
     }
     let meta = fs::metadata(&path)?;
-    if meta.len() > MAX_VAULT_FILE_SIZE {
+    if meta.len() > READ_MAX_VAULT_FILE_SIZE {
         return Err(SagitarriusError::Other(format!(
-            "vault file too large ({} bytes, max {MAX_VAULT_FILE_SIZE})",
+            "vault file too large ({} bytes, max {READ_MAX_VAULT_FILE_SIZE})",
             meta.len()
         )));
     }
@@ -128,12 +127,21 @@ pub fn read_vault() -> Result<Vec<u8>> {
 ///
 /// A crash at any point leaves either the old or the new vault intact.
 pub fn write_vault_atomic(data: &[u8]) -> Result<()> {
+    // Write-side cap, checked BEFORE anything is modified: an oversized
+    // vault errors here with the file untouched (read caps stay higher so
+    // the vault can still be opened and shrunk).
+    use crate::vault::MAX_VAULT_FILE_SIZE;
+    if data.len() as u64 > MAX_VAULT_FILE_SIZE {
+        return Err(SagitarriusError::Other(format!(
+            "vault too large to write ({} bytes, max {MAX_VAULT_FILE_SIZE}); remove or shrink secrets first",
+            data.len()
+        )));
+    }
     let path = platform::vault_path()?;
     let dir = path
         .parent()
         .ok_or_else(|| SagitarriusError::Other("vault path has no parent".into()))?;
-    fs::create_dir_all(dir)?;
-    set_dir_permissions(dir)?;
+    ensure_dir_perms(dir)?;
 
     let unique = format!(
         ".vault-{}-{}.tmp",
@@ -199,8 +207,7 @@ pub fn write_file_atomic(path: &Path, data: &[u8]) -> Result<()> {
     let dir = path
         .parent()
         .ok_or_else(|| SagitarriusError::Other("path has no parent".into()))?;
-    fs::create_dir_all(dir)?;
-    set_dir_permissions(dir)?;
+    ensure_dir_perms(dir)?;
 
     let unique = format!(
         ".tmp-{}-{}.tmp",
@@ -246,6 +253,23 @@ pub fn write_file_atomic(path: &Path, data: &[u8]) -> Result<()> {
 pub fn write_state_atomic(data: &[u8]) -> Result<()> {
     let path = platform::vault_dir()?.join("state.json");
     write_file_atomic(&path, data)
+}
+
+/// Create `dir` if missing and tighten it — but NEVER chmod a directory
+/// the user already had with content in it. A pre-existing non-empty
+/// `SAGITARRIUS_VAULT_DIR` keeps its permissions verbatim (it may be a
+/// shared or deliberately-arranged location); only directories we create,
+/// or empty ones, get 0700 on unix.
+fn ensure_dir_perms(dir: &Path) -> Result<()> {
+    let pre_existing_nonempty = dir.exists()
+        && fs::read_dir(dir)
+            .map(|mut d| d.next().is_some())
+            .unwrap_or(false);
+    fs::create_dir_all(dir)?;
+    if !pre_existing_nonempty {
+        set_dir_permissions(dir)?;
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

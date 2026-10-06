@@ -30,6 +30,23 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Set once at startup from the `--password-stdin` CLI flag.
 static PASSWORD_FROM_STDIN: AtomicBool = AtomicBool::new(false);
 
+/// Minimum accepted length for a NEW master password (init, passwd,
+/// recovery reset). Applies no matter where the password came from —
+/// terminal, pipe, stdin flag or environment. There is deliberately no
+/// bypass switch. Unlock attempts are never gated (legacy vaults with
+/// shorter passwords must keep opening).
+pub const MIN_PASSWORD_LEN: usize = 12;
+
+pub fn check_new_password(password: &str) -> Result<()> {
+    let len = password.chars().count();
+    if len < MIN_PASSWORD_LEN {
+        return Err(SagitarriusError::Usage(format!(
+            "master password must be at least {MIN_PASSWORD_LEN} characters ({len} given)"
+        )));
+    }
+    Ok(())
+}
+
 pub fn configure(password_stdin: bool) {
     PASSWORD_FROM_STDIN.store(password_stdin, Ordering::SeqCst);
 }
@@ -40,8 +57,12 @@ pub fn master_password(prompt: &str) -> Result<String> {
     if PASSWORD_FROM_STDIN.load(Ordering::SeqCst) {
         return read_stdin_line();
     }
+    // An empty variable is the same as unset (avoids a silent empty
+    // password and the confusing error it would cause downstream).
     if let Ok(pw) = std::env::var("SAGITARRIUS_PASSWORD") {
-        return Ok(pw);
+        if !pw.is_empty() {
+            return Ok(pw);
+        }
     }
     read_secret(prompt)
 }

@@ -88,7 +88,7 @@ fn get_missing_exits_nonzero() {
     cmd(&dir)
         .args(["get", "nope"])
         .assert()
-        .code(1)
+        .code(2)
         .stderr(predicate::str::contains("not found"));
 }
 
@@ -565,6 +565,390 @@ fn v3_lifecycle_migrate_snapshot_rollback_recovery() {
         .assert()
         .success()
         .stdout("v-secret\n");
+}
+
+/// F2: oversized writes fail BEFORE anything is modified.
+#[test]
+fn write_cap_enforced_before_writing() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v"]).assert().success();
+
+    let big = "x".repeat(1024 * 1024 + 1);
+    cmd(&dir)
+        .args(["add", "BIG"])
+        .write_stdin(format!("{big}\n{big}\n"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at most"));
+    // Nothing was modified: the old record is intact.
+    cmd(&dir)
+        .args(["get", "K"])
+        .assert()
+        .success()
+        .stdout("v\n");
+    cmd(&dir).args(["exists", "BIG"]).assert().code(1);
+}
+
+/// F4/F5: dangerous names need opt-in on import and run; errors name the
+/// secret, never the value.
+#[test]
+fn dangerous_names_need_opt_in() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+
+    let env_path = dir.path().join("evil.env");
+    std::fs::write(&env_path, "EVIL NAME=sekrit\nFINE=ok\n").unwrap();
+
+    // Default: skipped with a warning naming the secret (not the value).
+    let out = cmd(&dir)
+        .args(["import", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("EVIL NAME"));
+    assert!(!stderr.contains("sekrit"));
+    cmd(&dir).args(["exists", "EVIL NAME"]).assert().code(1);
+
+    // Opt-in import works.
+    cmd(&dir)
+        .args(["import", "--allow-dangerous", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    cmd(&dir).args(["exists", "EVIL NAME"]).assert().code(0);
+
+    // run refuses without the flag — naming the secret, never the value.
+    #[cfg(unix)]
+    {
+        let out = cmd(&dir)
+            .args(["run", "--secret", "EVIL NAME", "--", "/usr/bin/env"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(stderr.contains("EVIL NAME"));
+        assert!(!stderr.contains("sekrit"));
+
+        // ...and injects with it. /usr/bin/env is executed directly (no
+        // shell): dash drops space-names, env prints them raw.
+        let out = cmd(&dir)
+            .args([
+                "run",
+                "--secret",
+                "EVIL NAME",
+                "--allow-dangerous-env",
+                "--",
+                "/usr/bin/env",
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+        assert!(stdout.contains("EVIL NAME=sekrit"));
+    }
+}
+
+/// F6: clean negatives exit 1, every failure exits 2.
+#[test]
+fn exit_codes_usage_vs_operational() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+
+    // Usage errors -> 2.
+    cmd(&dir).args(["search", ""]).assert().code(2);
+    cmd(&dir).args(["export"]).assert().code(2);
+    cmd(&dir)
+        .args(["run", "--", "sh", "-c", "exit 0"])
+        .assert()
+        .code(2);
+    cmd(&dir)
+        .args(["gen", "BAD=NAME", "--length", "16"])
+        .assert()
+        .code(2);
+
+    // Operational failures -> 2 as well (wrong password, missing secret,
+    // corrupt vault, lockdown, stale generation all land here).
+    cmd(&dir).args(["get", "missing"]).assert().code(2);
+
+    // Wrong password -> 2 (not 1).
+    {
+        use assert_cmd::Command as AssertCommand;
+        let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+        c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+        c.env("SAGITARRIUS_PASSWORD", "definitely-wrong");
+        c.args(["get", "missing"]).assert().code(2);
+    }
+
+    // No vault at all -> 2.
+    {
+        let fresh = TempDir::new().unwrap();
+        let mut c = cmd(&fresh);
+        c.arg("list").assert().code(2);
+    }
+
+    // Lockdown refusal -> 2.
+    cmd(&dir).args(["add", "LOCKME", "v"]).assert().success();
+    cmd(&dir).arg("lockdown").assert().success();
+    cmd(&dir).args(["get", "LOCKME"]).assert().code(2);
+    cmd(&dir).args(["lockdown", "--off"]).assert().success();
+
+    // Clean negatives -> 1 (and only they do).
+    cmd(&dir).args(["search", "zzz"]).assert().code(1);
+    cmd(&dir).args(["exists", "missing"]).assert().code(1);
+
+    // --help documents the codes.
+    cmd(&dir)
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exit codes:"));
+}
+
+/// F7: new master passwords need 12+ chars on every path (env included);
+/// unlock attempts are never gated.
+#[test]
+fn short_master_passwords_rejected() {
+    use assert_cmd::Command as AssertCommand;
+    // init via env: rejected, and no vault is created.
+    let dir = TempDir::new().unwrap();
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env("SAGITARRIUS_PASSWORD", "short-11!!!");
+    c.arg("init").assert().failure().code(2);
+    assert!(!dir.path().join("vault.json").exists());
+
+    // Healthy vault, then a short rotation attempt via env: refused, and
+    // the old password keeps working.
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "k", "v"]).assert().success();
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env("SAGITARRIUS_PASSWORD", PW);
+    c.env("SAGITARRIUS_NEW_PASSWORD", "tiny");
+    c.args(["passwd"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at least 12"));
+    cmd(&dir)
+        .args(["get", "k"])
+        .assert()
+        .success()
+        .stdout("v\n");
+}
+
+/// F5: NUL bytes are rejected in secret values at every entry point.
+#[test]
+fn nul_in_values_rejected() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+
+    // add via stdin (argv cannot carry NUL on any OS — stdin can).
+    cmd(&dir)
+        .args(["add", "NULVAL"])
+        .write_stdin("a\0b\na\0b\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("NUL"));
+    cmd(&dir).args(["exists", "NULVAL"]).assert().code(1);
+
+    // import skips NUL values (counted, never stored).
+    let env_path = dir.path().join("nul.env");
+    std::fs::write(&env_path, "OKNUL=1\nBADNUL=a\0b\n").unwrap();
+    let out = cmd(&dir)
+        .args(["import", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("1 secret(s) added"));
+    cmd(&dir).args(["exists", "BADNUL"]).assert().code(1);
+}
+
+/// F4: loader/shell-startup names (LD_PRELOAD, PATH, ...) are refused by
+/// default even though most are valid POSIX identifiers.
+#[test]
+fn loader_names_refused_by_default() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+
+    let env_path = dir.path().join("loader.env");
+    std::fs::write(&env_path, "LD_PRELOAD=x\nOK=1\n").unwrap();
+
+    let out = cmd(&dir)
+        .args(["import", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("LD_PRELOAD"));
+    cmd(&dir).args(["exists", "LD_PRELOAD"]).assert().code(1);
+
+    cmd(&dir)
+        .args(["import", "--allow-dangerous", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    cmd(&dir).args(["exists", "LD_PRELOAD"]).assert().code(0);
+
+    // run refuses even though the name is a valid identifier.
+    // (Live injection of LD_PRELOAD is deliberately never exercised.)
+    cmd(&dir)
+        .args(["run", "--secret", "LD_PRELOAD", "--", "sh", "-c", "exit 0"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("LD_PRELOAD"));
+}
+/// F10: missing state.json with generation > 1 warns (does not fail);
+/// manifest MAC failure names integrity check + snapshot restore.
+#[test]
+fn missing_state_warns_mac_failure_explains() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v"]).assert().success();
+
+    // Drop trusted state: next command adopts with a warning, still works.
+    std::fs::remove_file(dir.path().join("state.json")).unwrap();
+    let out = cmd(&dir).args(["get", "K"]).assert().success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("no trusted state"));
+
+    // Tamper a record name: MAC failure explains itself.
+    let raw = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    v["records"][0]["name"] = serde_json::Value::from("TAMPERED");
+    std::fs::write(
+        dir.path().join("vault.json"),
+        serde_json::to_vec(&v).unwrap(),
+    )
+    .unwrap();
+    cmd(&dir)
+        .args(["get", "K"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("metadata failed integrity check"));
+}
+
+/// F11: empty SAGITARRIUS_PASSWORD counts as unset everywhere.
+#[test]
+fn empty_password_env_is_unset() {
+    use assert_cmd::Command as AssertCommand;
+    let dir = TempDir::new().unwrap();
+    // Empty env + piped password: init must work, not fail on "empty".
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env("SAGITARRIUS_PASSWORD", "");
+    c.arg("init")
+        .write_stdin("long-enough-password\nlong-enough-password\n")
+        .assert()
+        .success();
+    // ...and the vault opens with that password (env still empty: master
+    // password comes from stdin first, then the secret pair).
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env("SAGITARRIUS_PASSWORD", "");
+    c.args(["add", "K"])
+        .write_stdin("long-enough-password\nv\nv\n")
+        .assert()
+        .success();
+}
+
+/// F11: `export <path>` refuses to overwrite without --force.
+#[test]
+fn export_refuses_overwrite_without_force() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v"]).assert().success();
+
+    let dest = dir.path().join("out.env");
+    cmd(&dir)
+        .args(["export", "--plaintext", dest.to_str().unwrap()])
+        .assert()
+        .success();
+    // Second export to the same path: refused...
+    cmd(&dir)
+        .args(["export", "--plaintext", dest.to_str().unwrap()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--force"));
+    // ...unless --force.
+    cmd(&dir)
+        .args(["export", "--plaintext", "--force", dest.to_str().unwrap()])
+        .assert()
+        .success();
+}
+
+/// F11: a pre-existing non-empty vault dir keeps its permissions.
+#[cfg(unix)]
+#[test]
+fn preexisting_vault_dir_not_chmodded() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = TempDir::new().unwrap();
+    let vault_dir = dir.path().join("custom");
+    std::fs::create_dir_all(&vault_dir).unwrap();
+    // Marker makes it non-empty; 0755 must survive.
+    std::fs::write(vault_dir.join("keep.txt"), b"mine").unwrap();
+    std::fs::set_permissions(&vault_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let mut c = assert_cmd::Command::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", &vault_dir);
+    c.env("SAGITARRIUS_PASSWORD", PW);
+    c.arg("init").assert().success();
+
+    let mode = std::fs::metadata(&vault_dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(
+        mode, 0o755,
+        "pre-existing non-empty dir must keep permissions"
+    );
+    assert!(vault_dir.join("vault.json").exists());
+}
+
+/// F1: a v0.2.1 vault (v3 layout, no manifest MAC) opens as legacy, gains
+/// a MAC on first write, and a later-stripped MAC is refused via state.
+#[test]
+fn manifest_mac_legacy_upgrade_and_strip_rejection() {
+    use assert_cmd::Command as AssertCommand;
+    const FIXTURE_PW: &str = "v3-nomac-fixture-pw";
+
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(
+        "tests/fixtures/v3-nomac.json",
+        dir.path().join("vault.json"),
+    )
+    .unwrap();
+    let sag = || {
+        let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+        c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+        c.env("SAGITARRIUS_PASSWORD", FIXTURE_PW);
+        c
+    };
+
+    // Legacy opens fine.
+    sag()
+        .args(["get", "OLDREC"])
+        .assert()
+        .success()
+        .stdout("old-value\n");
+
+    // First write upgrades: MAC appears in the header.
+    sag()
+        .args(["add", "NEWKEY", "new-value"])
+        .assert()
+        .success();
+    let raw = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert!(v["header"]["manifest_mac"].is_string());
+
+    // Strip the MAC now that state records it: refused, fail closed.
+    let mut tampered: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    tampered["header"]
+        .as_object_mut()
+        .unwrap()
+        .remove("manifest_mac");
+    std::fs::write(
+        dir.path().join("vault.json"),
+        serde_json::to_vec(&tampered).unwrap(),
+    )
+    .unwrap();
+    sag()
+        .args(["get", "OLDREC"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stripped"));
 }
 
 /// Real CLI migration: a genuine v2 vault file (tests/fixtures/v2-basic.json,
