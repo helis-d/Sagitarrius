@@ -19,7 +19,7 @@ sagitarrius run --secret OPENAI_API_KEY -- cargo test
 
 ## Install
 
-From source (Rust 1.75+):
+From source (Rust 1.85+):
 
 ```bash
 git clone https://github.com/helis-d/Sagitarrius.git

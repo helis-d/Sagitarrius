@@ -212,7 +212,23 @@ impl VaultV2 {
     }
 
     /// Encrypt with a fresh nonce and return the JSON file bytes.
+    /// Write caps are enforced here: a legacy vault that grew past them
+    /// (before caps existed) fails closed instead of persisting oversized
+    /// records through unrelated edits. Shrink first, then it writes.
     pub fn serialize(&self) -> Result<Vec<u8>> {
+        if self.payload.secrets.len() > MAX_SECRETS {
+            return Err(SagitarriusError::Other(format!(
+                "vault holds {} secrets (max {MAX_SECRETS}); remove some first",
+                self.payload.secrets.len()
+            )));
+        }
+        for (name, entry) in &self.payload.secrets {
+            if name.len() > MAX_SECRET_NAME_LEN || entry.value.len() > MAX_SECRET_VALUE_LEN {
+                return Err(SagitarriusError::Other(format!(
+                    "secret {name:?} is too large to write (name ≤ {MAX_SECRET_NAME_LEN}B, value ≤ {MAX_SECRET_VALUE_LEN}B); shrink it first"
+                )));
+            }
+        }
         let aad = header_aad(&self.header)?;
         let mut plaintext = serde_json::to_vec(&self.payload)?;
         let (nonce, ciphertext) = crypto::encrypt(&self.key, &plaintext, &aad)?;
@@ -357,7 +373,7 @@ impl VaultV2 {
             }
             // Dangerous names (spaces, shell metacharacters, ...) are only
             // imported with explicit opt-in; otherwise skip loudly.
-            if !allow_dangerous && is_dangerous_name(key) {
+            if !allow_dangerous && needs_dangerous_opt_in(key) {
                 skipped += 1;
                 dangerous.push(key.to_string());
                 continue;
@@ -913,29 +929,39 @@ pub(crate) fn is_dangerous_name(name: &str) -> bool {
 }
 
 /// Exact loader/shell-startup names that must never be injected or imported
-/// by default: the dynamic loader (`LD_PRELOAD`, `LD_LIBRARY_PATH`,
-/// `LD_AUDIT`, `DYLD_*`) would execute attacker code in the child, and the
-/// shell-startup names (`BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`,
-/// `IFS`, `PATH`) hijack every spawned shell. Most are valid POSIX
-/// identifiers, so the metacharacter rule alone would miss them — hence an
-/// explicit denylist, enforced exactly like dangerous names.
+/// by default, grouped by the platform mechanism that honors them.
+/// `run`/`import` treat the whole union as dangerous (opt-in only).
+///
+/// - ELF dynamic loader (`ld.so`, Linux and other ELF systems): `LD_*`.
+///   Injecting `LD_PRELOAD` runs attacker code inside the child.
+/// - Mach-O loader (`dyld`, macOS): `DYLD_*`. (Apple SIP strips several of
+///   these for system binaries — still denied: defense in depth, and SIP
+///   does not cover every process.)
+/// - Shell startup/options (any Bourne-compatible shell the child may
+///   spawn, incl. via `sh -c`): `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS`,
+///   `PS4` (all execute or alter shell code), plus `IFS` and `PATH`, which
+///   silently redirect command resolution and field splitting.
+///
+/// Notes: there is no Windows loader equivalent driven purely by an env var
+/// (AppInit_DLLs lives in the registry), so no Windows-only entry exists;
+/// the shell group applies wherever a Unix shell may run, including shells
+/// spawned from Windows processes (Git Bash, WSL).
+const ELF_LOADER_VARS: &[&str] = &["LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT"];
+const SHELL_STARTUP_VARS: &[&str] = &[
+    "BASH_ENV",
+    "ENV",
+    "SHELLOPTS",
+    "BASHOPTS",
+    "PS4",
+    "IFS",
+    "PATH",
+];
+
 pub(crate) fn is_denylisted_env_name(name: &str) -> bool {
     if name.starts_with("DYLD_") {
         return true;
     }
-    matches!(
-        name,
-        "LD_PRELOAD"
-            | "LD_LIBRARY_PATH"
-            | "LD_AUDIT"
-            | "BASH_ENV"
-            | "ENV"
-            | "SHELLOPTS"
-            | "BASHOPTS"
-            | "PS4"
-            | "IFS"
-            | "PATH"
-    )
+    ELF_LOADER_VARS.contains(&name) || SHELL_STARTUP_VARS.contains(&name)
 }
 
 /// Refused-by-default for `run`/`import` unless the corresponding
@@ -1645,6 +1671,43 @@ mod tests {
         // Timestamps preserved across the migration.
         let info = v.info("LEGACY").unwrap();
         assert_eq!((info.created_at, info.updated_at), (111, 222));
+    }
+
+    /// §23: a legacy V2 vault that exceeds write caps must fail at
+    /// serialize time (fail closed) instead of surviving via unrelated edits.
+    #[test]
+    fn v2_serialize_enforces_write_caps() {
+        use base64::{engine::general_purpose::STANDARD as B64s, Engine};
+        // Hand-build an oversized v2 file (opens fine under READ caps)...
+        let params = crate::crypto::KdfParams::default();
+        let salt = [21u8; crate::crypto::SALT_LEN];
+        let key = crate::crypto::derive_key(PW, &salt, params).unwrap();
+        let header = VaultHeader {
+            magic: MAGIC.into(),
+            version: FORMAT_VERSION,
+            kdf: "argon2id".into(),
+            kdf_params: params,
+            salt: B64s.encode(salt),
+        };
+        let big = "z".repeat(MAX_SECRET_VALUE_LEN + 1);
+        let payload = serde_json::json!({"secrets": {"BIG": {"value": big, "created_at": 1, "updated_at": 1}}});
+        let aad = serde_json::to_vec(&header).unwrap();
+        let plain = serde_json::to_vec(&payload).unwrap();
+        let (nonce, ct) = crate::crypto::encrypt(&key, &plain, &aad).unwrap();
+        let file = VaultFile {
+            header,
+            nonce: B64s.encode(nonce),
+            ciphertext: B64s.encode(&ct),
+        };
+        let bytes = serde_json::to_vec_pretty(&file).unwrap();
+        let mut v = VaultV2::unlock(PW, &bytes).unwrap();
+        // ...but refuses to serialize until shrunk.
+        let err = v.serialize().unwrap_err();
+        assert!(err.to_string().contains("too large"));
+        // Shrinking fixes it.
+        v.remove("BIG");
+        v.set("small", "v");
+        assert!(v.serialize().is_ok());
     }
 
     #[test]

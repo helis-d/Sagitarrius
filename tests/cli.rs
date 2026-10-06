@@ -618,6 +618,9 @@ fn dangerous_names_need_opt_in() {
     cmd(&dir).args(["exists", "EVIL NAME"]).assert().code(0);
 
     // run refuses without the flag — naming the secret, never the value.
+    // The observing child is platform-native: /usr/bin/env on unix (no
+    // shell in between; dash would drop space-names), `cmd /c set` on
+    // Windows. Both print the raw environment block.
     #[cfg(unix)]
     {
         let out = cmd(&dir)
@@ -628,8 +631,7 @@ fn dangerous_names_need_opt_in() {
         assert!(stderr.contains("EVIL NAME"));
         assert!(!stderr.contains("sekrit"));
 
-        // ...and injects with it. /usr/bin/env is executed directly (no
-        // shell): dash drops space-names, env prints them raw.
+        // ...and injects with it.
         let out = cmd(&dir)
             .args([
                 "run",
@@ -638,6 +640,32 @@ fn dangerous_names_need_opt_in() {
                 "--allow-dangerous-env",
                 "--",
                 "/usr/bin/env",
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+        assert!(stdout.contains("EVIL NAME=sekrit"));
+    }
+    #[cfg(windows)]
+    {
+        let out = cmd(&dir)
+            .args(["run", "--secret", "EVIL NAME", "--", "cmd", "/c", "set"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(stderr.contains("EVIL NAME"));
+        assert!(!stderr.contains("sekrit"));
+
+        let out = cmd(&dir)
+            .args([
+                "run",
+                "--secret",
+                "EVIL NAME",
+                "--allow-dangerous-env",
+                "--",
+                "cmd",
+                "/c",
+                "set",
             ])
             .assert()
             .success();
@@ -897,6 +925,257 @@ fn preexisting_vault_dir_not_chmodded() {
     assert!(vault_dir.join("vault.json").exists());
 }
 
+/// §21: a stripped MAC must not heal-forward past trusted state. Attacker
+/// takes a MAC'd vault, strips the MAC *and* raises generation above the
+/// trusted value: must fail closed, and state must keep has_manifest_mac.
+#[test]
+fn stripped_mac_cannot_heal_forward() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v"]).assert().success();
+
+    // Sanity: trusted state records a MAC.
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["has_manifest_mac"], true);
+
+    // Attack: strip MAC, forge a higher generation.
+    let raw = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    v["header"].as_object_mut().unwrap().remove("manifest_mac");
+    v["header"]["generation"] = serde_json::Value::from(9999u64);
+    std::fs::write(
+        dir.path().join("vault.json"),
+        serde_json::to_vec(&v).unwrap(),
+    )
+    .unwrap();
+
+    cmd(&dir)
+        .args(["get", "K"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stripped"));
+
+    // State was not downgraded by the attempt.
+    let state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("state.json")).unwrap())
+            .unwrap();
+    assert_eq!(state["has_manifest_mac"], true);
+}
+
+/// §22: recovery must not bypass integrity protections. A stale vault
+/// (generation behind trusted state) and a MAC-stripped vault both refuse
+/// recovery verify AND password reset — even with the correct code.
+#[test]
+fn recovery_respects_integrity_gates() {
+    use assert_cmd::Command as AssertCommand;
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v"]).assert().success();
+
+    let out = cmd(&dir).args(["recovery", "create"]).assert().success();
+    let code = String::from_utf8(out.get_output().stdout.clone())
+        .unwrap()
+        .trim()
+        .to_string();
+
+    let feed = |args: &[&str], stdin: String| {
+        let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+        c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+        c.env_remove("SAGITARRIUS_PASSWORD");
+        c.args(args);
+        let _ = c.write_stdin(stdin);
+        c
+    };
+
+    // Baseline: code verifies on the healthy vault.
+    feed(&["recovery", "verify"], format!("{code}\n"))
+        .assert()
+        .success();
+
+    // STALE: forge trusted state ahead of the vault.
+    let state_path = dir.path().join("state.json");
+    let mut state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    state["generation"] = serde_json::Value::from(9999u64);
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    feed(&["recovery", "verify"], format!("{code}\n"))
+        .assert()
+        .failure();
+    feed(
+        &["recovery", "reset-password"],
+        format!("{code}\nnew-pw-after-loss\nnew-pw-after-loss\n"),
+    )
+    .assert()
+    .failure();
+
+    // Restore trust for the next scenario: delete state (re-adopt).
+    std::fs::remove_file(&state_path).unwrap();
+
+    // STRIPPED MAC: remove it from the file (state re-adopts MAC-less, then
+    // a write would flip has_mac... so instead poison state first).
+    let raw = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let mut v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    v["header"].as_object_mut().unwrap().remove("manifest_mac");
+    std::fs::write(
+        dir.path().join("vault.json"),
+        serde_json::to_vec(&v).unwrap(),
+    )
+    .unwrap();
+    // Fresh state adopts MAC-less as legacy: verify passes (legacy accept).
+    feed(&["recovery", "verify"], format!("{code}\n"))
+        .assert()
+        .success();
+    // Now simulate a state that HAD seen the MAC: flip the flag manually
+    // (equivalent to any prior write having recorded it).
+    let mut state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    state["has_manifest_mac"] = serde_json::Value::from(true);
+    std::fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    feed(&["recovery", "verify"], format!("{code}\n"))
+        .assert()
+        .failure();
+    feed(
+        &["recovery", "reset-password"],
+        format!("{code}\nnew-pw-after-loss\nnew-pw-after-loss\n"),
+    )
+    .assert()
+    .failure();
+}
+
+/// §24: the legacy V2 import path enforces the same denylist as v3
+/// (PATH, LD_PRELOAD, BASH_ENV must not slip through on old vaults).
+#[test]
+fn v2_import_enforces_denylist() {
+    use assert_cmd::Command as AssertCommand;
+    const FIXTURE_PW: &str = "v2-fixture-password";
+
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(
+        "tests/fixtures/v2-basic.json",
+        dir.path().join("vault.json"),
+    )
+    .unwrap();
+    let sag = || {
+        let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+        c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+        c.env("SAGITARRIUS_PASSWORD", FIXTURE_PW);
+        c
+    };
+
+    let env_path = dir.path().join("loader.env");
+    std::fs::write(&env_path, "PATH=x\nLD_PRELOAD=y\nBASH_ENV=z\nOKV2=1\n").unwrap();
+
+    let out = sag()
+        .args(["import", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    // Only OKV2 lands; all three loader names are skipped loudly.
+    assert!(stderr.contains("1 secret(s) added"));
+    assert!(stderr.contains("PATH") || stderr.contains("LD_PRELOAD"));
+    sag().args(["exists", "PATH"]).assert().code(1);
+
+    sag()
+        .args(["import", "--allow-dangerous", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    sag().args(["exists", "PATH"]).assert().code(0);
+    sag().args(["exists", "OKV2"]).assert().code(0);
+}
+/// §10/§11: argument boundaries, tricky values and unicode paths survive
+/// `run` and `file` on any OS (no shell string is ever constructed).
+#[test]
+fn run_preserves_argument_boundaries() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir)
+        .args(["add", "SPACED", "a b  c"])
+        .assert()
+        .success();
+
+    #[cfg(unix)]
+    {
+        // printf prints each argv between markers: spaces, quotes, unicode,
+        // empty strings and metacharacters must arrive as single argv each.
+        let out = cmd(&dir)
+            .args([
+                "run",
+                "--secret",
+                "SPACED",
+                "--",
+                "sh",
+                "-c",
+                "printf '<%s>' \"$@\"",
+                "argv0",
+                "a b",
+                "c\"d",
+                "ünïcode",
+                "",
+                "$HOME `tick`",
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+        assert_eq!(stdout, "<a b><c\"d><ünïcode><><$HOME `tick`>");
+    }
+    #[cfg(windows)]
+    {
+        // A temp script file plus `-File`: remaining argv reach the script
+        // untouched (no shell quoting anywhere). -EncodedCommand rejects
+        // trailing argv on Windows PowerShell, `-Command` string-concats
+        // them — both verified unsuitable while writing this test.
+        let script = dir.path().join("show_args.ps1");
+        std::fs::write(
+            &script,
+            "param([Parameter(ValueFromRemainingArguments=$true)][string[]]$rest)\n$rest -join '|'\n",
+        )
+        .unwrap();
+        let out = cmd(&dir)
+            .args([
+                "run",
+                "--secret",
+                "SPACED",
+                "--",
+                "powershell",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                script.to_str().unwrap(),
+                "a b",
+                "ünïcode",
+                "",
+            ])
+            .assert()
+            .success();
+        // Windows PowerShell 5.1 writes the console codepage (not UTF-8),
+        // so compare the ASCII-safe skeleton: three argv => two separators.
+        let stdout = String::from_utf8_lossy(&out.get_output().stdout);
+        assert!(stdout.starts_with("a b|"), "boundaries: {stdout:?}");
+        assert_eq!(stdout.matches('|').count(), 2, "argv: {stdout:?}");
+    }
+}
+
+/// §11: unicode file names work through `file put`/`file get`.
+#[test]
+fn file_unicode_names_roundtrip() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    let src = dir.path().join("ünïcode name_日本.bin");
+    std::fs::write(&src, b"bytes-\x00-binary-ok").unwrap();
+    cmd(&dir)
+        .args(["file", "put", src.to_str().unwrap(), "--name", "UFILE"])
+        .assert()
+        .success();
+    let dest = dir.path().join("out-ü.bin");
+    cmd(&dir)
+        .args(["file", "get", "UFILE", dest.to_str().unwrap()])
+        .assert()
+        .success();
+    assert_eq!(std::fs::read(&dest).unwrap(), b"bytes-\x00-binary-ok");
+}
 /// F1: a v0.2.1 vault (v3 layout, no manifest MAC) opens as legacy, gains
 /// a MAC on first write, and a later-stripped MAC is refused via state.
 #[test]

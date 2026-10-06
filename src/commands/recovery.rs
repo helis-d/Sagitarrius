@@ -75,18 +75,25 @@ pub fn verify() -> Result<i32> {
     let mut raw = read_code()?;
     // Header-only: no password involved. Success proves the code unwraps the
     // VMK of *this* vault file.
-    let ok = crate::vault_v3::VaultV3::unlock_with_recovery(&data, &raw).map(|_| ());
-    raw.zeroize();
-    match ok {
-        Ok(()) => {
-            eprintln!("Recovery code is VALID for this vault.");
-            Ok(0)
-        }
+    let vault = match crate::vault_v3::VaultV3::unlock_with_recovery(&data, &raw) {
+        Ok(v) => v,
         Err(e) => {
+            raw.zeroize();
             eprintln!("Recovery code FAILED: {e}");
-            Ok(1)
+            return Ok(1);
         }
+    };
+    // Same integrity gates as every other path: a valid code must not
+    // authorize a stale or stripped vault. Refusal is an error (exit 2),
+    // distinct from a merely wrong code (exit 1 above).
+    let facade = Vault::V3(vault);
+    if let Err(e) = crate::state::verify_generation(&facade) {
+        raw.zeroize();
+        return Err(e);
     }
+    raw.zeroize();
+    eprintln!("Recovery code is VALID for this vault.");
+    Ok(0)
 }
 
 pub fn reset_password() -> Result<i32> {
@@ -102,6 +109,13 @@ pub fn reset_password() -> Result<i32> {
             return Err(e);
         }
     };
+    // Integrity gates BEFORE touching anything: a valid recovery code must
+    // not authorize rewriting attacker-modified metadata. Only after this
+    // do we prompt for (and install) the new password.
+    if let Err(e) = crate::state::verify_generation(&vault) {
+        raw.zeroize();
+        return Err(e);
+    }
 
     let mut new1 = input::read_secret("Enter NEW master password: ")?;
     if new1.trim().is_empty() {

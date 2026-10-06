@@ -6,16 +6,26 @@
 
 ## Vault location
 
-| OS | Path |
+| Platform | Default data location |
 |---|---|
-| Linux | `$XDG_DATA_HOME/sagitarrius/vault.json` (fallback `~/.local/share/sagitarrius/vault.json`) |
-| macOS | `~/Library/Application Support/sagitarrius/vault.json` |
-| Windows | `%APPDATA%\sagitarrius\data\vault.json` |
+| Windows | OS application-data directory (`%APPDATA%`-based) |
+| Linux | `$XDG_DATA_HOME` or `$HOME/.local/share` |
+| macOS | `~/Library/Application Support` |
+
+Sagitarrius derives the exact application-specific path through the
+platform abstraction (`directories::ProjectDirs`), it is not hardcoded:
+today that resolves to `%APPDATA%\sagitarrius\data\vault.json` on Windows,
+`$XDG_DATA_HOME/sagitarrius/vault.json` (fallback
+`~/.local/share/sagitarrius/vault.json`) on Linux, and
+`~/Library/Application Support/sagitarrius/vault.json` on macOS.
 
 Override with `SAGITARRIUS_VAULT_DIR=/some/dir` (handy for tests and
-portable installs). The vault is a single JSON file: a plaintext header
-(magic, version, KDF params, salt) plus base64 nonce and ciphertext. No
-plaintext secret is ever written to disk.
+portable installs). Explicitly overridden directories are never
+re-permissioned; the managed default directory is tightened to `0700`
+(unix) when Sagitarrius creates it or finds it empty.
+
+The vault itself is a single JSON file: a plaintext header plus encrypted
+records. No plaintext secret is ever written to disk.
 
 ## Cryptography
 
@@ -51,7 +61,9 @@ Master password
 
 - Updates are written to a fresh temp file in the same directory (`0600` on
   Unix), `fsync`ed, then `rename`d over the destination. A crash leaves
-  either the old or the new vault intact. No backups are kept.
+  either the old or the new vault intact. Crash safety is not backup:
+  use `snapshot create` / `backup create --to <dir>` (see
+  [backup.md](backup.md)).
 - Mutating commands take an exclusive advisory lock next to the vault, so
   there is a single writer at a time. Reads are lock-free.
 - On Unix the vault file is `0600` and the directory `0700`. On Windows we

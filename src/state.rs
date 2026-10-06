@@ -7,10 +7,16 @@
 //! seen in a *separate* state file next to the vault:
 //!
 //! ```text
+//! state says MAC required + file has none -> STRIPPED, refuse (checked first)
 //! header.generation < state.generation  ->  STALE, refuse (possible rollback)
 //! header.generation > state.generation  ->  heal forward (state write lost)
 //! header.generation == state.generation ->  current, proceed
 //! ```
+//!
+//! Ordering is load-bearing: the strip check runs before forward-healing,
+//! so a MAC-less file can never heal its way into downgrading the trusted
+//! `has_manifest_mac` flag. That flag is monotonic (false -> true only,
+//! flipped on writes, never by reads).
 //!
 //! Honest limitation: an attacker who replaces *both* the vault and the
 //! state file consistently is indistinguishable locally. That is what
@@ -63,6 +69,23 @@ pub fn verify_generation(vault: &Vault) -> Result<()> {
         // adopt it rather than bricking the user.
         return store_generation(vault);
     }
+    // Strip check FIRST, before any healing path below: a MAC-less file
+    // arriving where a MAC is trusted is an attack, no matter what its
+    // generation claims. (A stripped MAC paired with a forged-high
+    // generation must not trigger the forward-heal branch and downgrade
+    // `has_manifest_mac` to false — that flag is monotonic.)
+    if state.has_manifest_mac && vault.is_v3() && !vault.has_manifest_mac() {
+        // The vault used to carry a manifest MAC and now does not: someone
+        // stripped it (downgrading metadata-integrity to legacy-accept).
+        // Fail closed; the way back is an explicit restore.
+        return Err(SagitarriusError::Other(
+            "vault manifest MAC is missing but trusted state records one — \
+             refusing: possible metadata-tamper (stripped manifest MAC). \
+             Restore explicitly with `sagitarrius snapshot restore <id>` or \
+             `sagitarrius backup restore <id>`"
+                .into(),
+        ));
+    }
     if vault.generation() < state.generation {
         return Err(SagitarriusError::Other(format!(
             "vault generation {} is older than trusted generation {} for this vault id — \
@@ -75,19 +98,9 @@ pub fn verify_generation(vault: &Vault) -> Result<()> {
     if vault.generation() > state.generation {
         // Forward heal: a previous state write was lost (crash between the
         // vault rename and the state update). The vault itself is authentic.
+        // Reached only after the strip check above, so a stored
+        // has_manifest_mac=true can never flip back to false here.
         return store_generation(vault);
-    }
-    if state.has_manifest_mac && vault.is_v3() && !vault.has_manifest_mac() {
-        // The vault used to carry a manifest MAC and now does not: someone
-        // stripped it (downgrading metadata-integrity to legacy-accept).
-        // Fail closed; the way back is an explicit restore.
-        return Err(SagitarriusError::Other(
-            "vault manifest MAC is missing but trusted state records one — \
-             refusing: possible metadata-tamper (stripped manifest MAC). \
-             Restore explicitly with `sagitarrius snapshot restore <id>` or \
-             `sagitarrius backup restore <id>`"
-                .into(),
-        ));
     }
     Ok(())
 }
