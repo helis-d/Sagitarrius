@@ -23,7 +23,9 @@
 use crate::crypto::{self, DerivedKey, KdfParams, NONCE_LEN, SALT_LEN};
 use crate::envelope::{self, VaultMasterKey, LABEL_RECORD};
 use crate::error::{Result, SagitarriusError};
-use crate::vault::{validate_kdf_params, MAX_SECRETS, MAX_SECRET_NAME_LEN, MAX_SECRET_VALUE_LEN};
+use crate::vault::{
+    validate_kdf_params, READ_MAX_SECRETS, READ_MAX_SECRET_NAME_LEN, READ_MAX_SECRET_VALUE_LEN,
+};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,10 @@ pub struct HeaderV3 {
     pub generation: u64,  // bumped on every mutating write
     pub kdf: String,
     pub wraps: Vec<WrapEntry>,
+    /// HMAC-SHA256 over the canonical manifest encoding (see below).
+    /// `None` on pre-F1 files: accepted as legacy, added on next write.
+    #[serde(default)]
+    pub manifest_mac: Option<String>, // base64
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +213,63 @@ fn record_aad(vault_id: &str, record_id: &str, kind: &str) -> Vec<u8> {
     format!("SAGITARRIUS/v3/record|{vault_id}|{record_id}|{kind}|3").into_bytes()
 }
 
+/// Canonical manifest encoding for the header MAC. Length-prefixed fields
+/// (u64 big-endian length + bytes) for every variable-length value;
+/// fixed-size integers as raw big-endian. Records sorted by id bytes so
+/// encoding is order-independent. Versioned by the `manifest-v1` domain.
+fn manifest_canonical(vault_id: &str, generation: u64, records: &[StoredRecord]) -> Vec<u8> {
+    fn field(out: &mut Vec<u8>, b: &[u8]) {
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(b);
+    }
+    let mut out = b"SAGITARRIUS/manifest-v1".to_vec();
+    field(&mut out, vault_id.as_bytes());
+    out.extend_from_slice(&generation.to_be_bytes());
+    let mut sorted: Vec<&StoredRecord> = records.iter().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    for r in sorted {
+        field(&mut out, r.id.as_bytes());
+        field(&mut out, r.name.as_bytes());
+        field(&mut out, r.kind.as_bytes());
+        out.extend_from_slice(&r.created_at.to_be_bytes());
+        out.extend_from_slice(&r.updated_at.to_be_bytes());
+        field(&mut out, r.nonce.as_bytes());
+    }
+    out
+}
+
+/// Compute the manifest MAC under the VMK-derived manifest key.
+fn compute_manifest_mac(
+    vmk: &VaultMasterKey,
+    vault_id: &str,
+    generation: u64,
+    records: &[StoredRecord],
+) -> String {
+    use base64::{engine::general_purpose::STANDARD as B64m, Engine};
+    let key = envelope::manifest_key(vmk, vault_id);
+    let msg = manifest_canonical(vault_id, generation, records);
+    let tag = envelope::compute_mac(&key, &msg);
+    B64m.encode(&tag)
+}
+
+/// Verify the stored manifest MAC (constant-time). Absent MAC = legacy file,
+/// accepted here; stripping detection lives in trusted state (see state.rs).
+fn verify_manifest_mac(
+    vmk: &VaultMasterKey,
+    header: &HeaderV3,
+    records: &[StoredRecord],
+) -> Result<()> {
+    let Some(stored_b64) = &header.manifest_mac else {
+        return Ok(());
+    };
+    let stored = B64
+        .decode(stored_b64)
+        .map_err(|_| SagitarriusError::InvalidVaultFormat)?;
+    let key = envelope::manifest_key(vmk, &header.vault_id);
+    let msg = manifest_canonical(&header.vault_id, header.generation, records);
+    envelope::verify_mac(&key, &msg, &stored)
+}
+
 fn record_key(vmk: &VaultMasterKey, vault_id_b64: &str, record_id_b64: &str) -> DerivedKey {
     let salt = B64.decode(vault_id_b64).unwrap_or_default();
     let info = format!("{LABEL_RECORD}/{record_id_b64}");
@@ -320,6 +383,9 @@ impl VaultV3 {
                 generation: 0,
                 kdf: "argon2id".into(),
                 wraps: vec![pw_wrap],
+                // No MAC yet: the first serialize() computes it. (A header
+                // without MAC is exactly what legacy files look like.)
+                manifest_mac: None,
             },
             vmk,
             records: Vec::new(),
@@ -343,12 +409,12 @@ impl VaultV3 {
         if B64.decode(&file.header.vault_id).is_err() {
             return Err(SagitarriusError::InvalidVaultFormat);
         }
-        if file.records.len() > MAX_SECRETS {
+        if file.records.len() > READ_MAX_SECRETS {
             return Err(SagitarriusError::InvalidVaultFormat);
         }
         for rec in &file.records {
-            if rec.name.len() > MAX_SECRET_NAME_LEN
-                || rec.ciphertext.len() > MAX_SECRET_VALUE_LEN * 2
+            if rec.name.len() > READ_MAX_SECRET_NAME_LEN
+                || rec.ciphertext.len() > READ_MAX_SECRET_VALUE_LEN * 2
             {
                 return Err(SagitarriusError::InvalidVaultFormat);
             }
@@ -357,11 +423,15 @@ impl VaultV3 {
             }
         }
         let vmk = unwrap_with_secret(&file.header, WRAP_KIND_PASSWORD, password)?;
-        Ok(Self {
+        let vault = Self {
             header: file.header,
             vmk,
             records: file.records,
-        })
+        };
+        // Metadata membership proof: any added/removed/renamed record, or a
+        // tampered generation counter, fails here — fail closed.
+        verify_manifest_mac(&vault.vmk, &vault.header, &vault.records)?;
+        Ok(vault)
     }
 
     /// Open with a recovery code instead of the password. Used by
@@ -378,11 +448,13 @@ impl VaultV3 {
         }
         let hex: String = code_raw.iter().map(|b| format!("{b:02x}")).collect();
         let vmk = unwrap_with_secret(&file.header, WRAP_KIND_RECOVERY, &hex)?;
-        Ok(Self {
+        let vault = Self {
             header: file.header,
             vmk,
             records: file.records,
-        })
+        };
+        verify_manifest_mac(&vault.vmk, &vault.header, &vault.records)?;
+        Ok(vault)
     }
 
     pub fn has_recovery(&self) -> bool {
@@ -507,7 +579,9 @@ impl VaultV3 {
     }
 
     /// Import one legacy (v2) entry preserving its timestamps. Used only by
-    /// migration, which pre-validates names through the v2 parse.
+    /// migration, which pre-validates names through the v2 parse. Enforces
+    /// write caps: an oversized legacy entry fails migration loudly instead
+    /// of producing a vault that violates write limits.
     pub(crate) fn import_legacy_entry(
         &mut self,
         name: &str,
@@ -515,6 +589,12 @@ impl VaultV3 {
         created_at: u64,
         updated_at: u64,
     ) -> Result<()> {
+        use crate::vault::{MAX_SECRET_NAME_LEN, MAX_SECRET_VALUE_LEN};
+        if name.len() > MAX_SECRET_NAME_LEN || value.len() > MAX_SECRET_VALUE_LEN {
+            return Err(SagitarriusError::Other(format!(
+                "secret {name:?} is too large to migrate (name ≤ {MAX_SECRET_NAME_LEN}B, value ≤ {MAX_SECRET_VALUE_LEN}B); shrink it first"
+            )));
+        }
         let kind = RecordKind::Secret.as_str().to_string();
         let id = B64.encode(random_id());
         let payload = RecordPayload::Secret {
@@ -534,9 +614,16 @@ impl VaultV3 {
     }
 
     /// Serialize with a bumped generation. Records already carry their own
-    /// ciphertexts; only the header (generation) changes.
+    /// ciphertexts; only the header (generation) changes. The manifest MAC
+    /// is recomputed on every write, so it always covers the latest state.
     pub fn serialize(&mut self) -> Result<Vec<u8>> {
         self.header.generation = self.header.generation.saturating_add(1);
+        self.header.manifest_mac = Some(compute_manifest_mac(
+            &self.vmk,
+            &self.header.vault_id,
+            self.header.generation,
+            &self.records,
+        ));
         let file = VaultFileV3 {
             header: self.header.clone(),
             records: self.records.clone(),
@@ -661,5 +748,75 @@ mod tests {
         );
         // Recovery still works after the reset.
         VaultV3::unlock_with_recovery(&bytes, &code_raw).unwrap();
+    }
+
+    #[test]
+    fn manifest_mac_present_after_write() {
+        let mut v = VaultV3::create(PW).unwrap();
+        v.set_payload("K", RecordPayload::Secret { value: "v".into() })
+            .unwrap();
+        let bytes = v.serialize().unwrap();
+        let file: VaultFileV3 = serde_json::from_slice(&bytes).unwrap();
+        assert!(file.header.manifest_mac.is_some());
+        // Untouched file opens.
+        VaultV3::unlock(PW, &bytes).unwrap();
+    }
+
+    #[test]
+    fn manifest_mac_rejects_renamed_record() {
+        let mut v = VaultV3::create(PW).unwrap();
+        v.set_payload("K", RecordPayload::Secret { value: "v".into() })
+            .unwrap();
+        let bytes = v.serialize().unwrap();
+        let mut file: VaultFileV3 = serde_json::from_slice(&bytes).unwrap();
+        file.records[0].name = "K-RENAMED".into();
+        let evil = serde_json::to_vec(&file).unwrap();
+        assert!(VaultV3::unlock(PW, &evil).is_err());
+    }
+
+    #[test]
+    fn manifest_mac_rejects_removed_record() {
+        let mut v = VaultV3::create(PW).unwrap();
+        v.set_payload("A", RecordPayload::Secret { value: "1".into() })
+            .unwrap();
+        v.set_payload("B", RecordPayload::Secret { value: "2".into() })
+            .unwrap();
+        let bytes = v.serialize().unwrap();
+        let mut file: VaultFileV3 = serde_json::from_slice(&bytes).unwrap();
+        file.records.pop();
+        let evil = serde_json::to_vec(&file).unwrap();
+        assert!(VaultV3::unlock(PW, &evil).is_err());
+    }
+
+    #[test]
+    fn manifest_mac_rejects_bumped_generation() {
+        let mut v = VaultV3::create(PW).unwrap();
+        let bytes = v.serialize().unwrap();
+        let mut file: VaultFileV3 = serde_json::from_slice(&bytes).unwrap();
+        file.header.generation += 100;
+        let evil = serde_json::to_vec(&file).unwrap();
+        assert!(VaultV3::unlock(PW, &evil).is_err());
+    }
+
+    #[test]
+    fn manifest_mac_legacy_upgrade() {
+        // A v3 file without a MAC (pre-F1 / v0.2.1) opens fine...
+        let mut v = VaultV3::create(PW).unwrap();
+        v.set_payload("K", RecordPayload::Secret { value: "v".into() })
+            .unwrap();
+        let bytes = v.serialize().unwrap();
+        let mut file: VaultFileV3 = serde_json::from_slice(&bytes).unwrap();
+        file.header.manifest_mac = None;
+        let legacy = serde_json::to_vec(&file).unwrap();
+        let mut reopened = VaultV3::unlock(PW, &legacy).unwrap();
+        assert_eq!(
+            reopened.get_payload("K"),
+            Some(RecordPayload::Secret { value: "v".into() })
+        );
+        // ...and the next write upgrades it with a MAC.
+        let upgraded = reopened.serialize().unwrap();
+        let file: VaultFileV3 = serde_json::from_slice(&upgraded).unwrap();
+        assert!(file.header.manifest_mac.is_some());
+        VaultV3::unlock(PW, &upgraded).unwrap();
     }
 }

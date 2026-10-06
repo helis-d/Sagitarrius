@@ -117,6 +117,11 @@ pub fn reset_password() -> Result<i32> {
         return Err(SagitarriusError::PasswordMismatch);
     }
     new2.zeroize();
+    if let Err(e) = input::check_new_password(&new1) {
+        new1.zeroize();
+        raw.zeroize();
+        return Err(e);
+    }
 
     vault.reset_password_via_recovery(&raw, &new1)?;
     raw.zeroize();

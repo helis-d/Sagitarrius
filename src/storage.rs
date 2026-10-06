@@ -102,15 +102,15 @@ pub fn ensure_unlocked() -> Result<()> {
 }
 
 pub fn read_vault() -> Result<Vec<u8>> {
-    use crate::vault::MAX_VAULT_FILE_SIZE;
+    use crate::vault::READ_MAX_VAULT_FILE_SIZE;
     let path = platform::vault_path()?;
     if !path.exists() {
         return Err(SagitarriusError::NotInitialized);
     }
     let meta = fs::metadata(&path)?;
-    if meta.len() > MAX_VAULT_FILE_SIZE {
+    if meta.len() > READ_MAX_VAULT_FILE_SIZE {
         return Err(SagitarriusError::Other(format!(
-            "vault file too large ({} bytes, max {MAX_VAULT_FILE_SIZE})",
+            "vault file too large ({} bytes, max {READ_MAX_VAULT_FILE_SIZE})",
             meta.len()
         )));
     }
@@ -128,6 +128,16 @@ pub fn read_vault() -> Result<Vec<u8>> {
 ///
 /// A crash at any point leaves either the old or the new vault intact.
 pub fn write_vault_atomic(data: &[u8]) -> Result<()> {
+    // Write-side cap, checked BEFORE anything is modified: an oversized
+    // vault errors here with the file untouched (read caps stay higher so
+    // the vault can still be opened and shrunk).
+    use crate::vault::MAX_VAULT_FILE_SIZE;
+    if data.len() as u64 > MAX_VAULT_FILE_SIZE {
+        return Err(SagitarriusError::Other(format!(
+            "vault too large to write ({} bytes, max {MAX_VAULT_FILE_SIZE}); remove or shrink secrets first",
+            data.len()
+        )));
+    }
     let path = platform::vault_path()?;
     let dir = path
         .parent()

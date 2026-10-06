@@ -567,6 +567,203 @@ fn v3_lifecycle_migrate_snapshot_rollback_recovery() {
         .stdout("v-secret\n");
 }
 
+/// F2: oversized writes fail BEFORE anything is modified.
+#[test]
+fn write_cap_enforced_before_writing() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "K", "v"]).assert().success();
+
+    let big = "x".repeat(1024 * 1024 + 1);
+    cmd(&dir)
+        .args(["add", "BIG"])
+        .write_stdin(format!("{big}\n{big}\n"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at most"));
+    // Nothing was modified: the old record is intact.
+    cmd(&dir)
+        .args(["get", "K"])
+        .assert()
+        .success()
+        .stdout("v\n");
+    cmd(&dir).args(["exists", "BIG"]).assert().code(1);
+}
+
+/// F4/F5: dangerous names need opt-in on import and run; errors name the
+/// secret, never the value.
+#[test]
+fn dangerous_names_need_opt_in() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+
+    let env_path = dir.path().join("evil.env");
+    std::fs::write(&env_path, "EVIL NAME=sekrit\nFINE=ok\n").unwrap();
+
+    // Default: skipped with a warning naming the secret (not the value).
+    let out = cmd(&dir)
+        .args(["import", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+    assert!(stderr.contains("EVIL NAME"));
+    assert!(!stderr.contains("sekrit"));
+    cmd(&dir).args(["exists", "EVIL NAME"]).assert().code(1);
+
+    // Opt-in import works.
+    cmd(&dir)
+        .args(["import", "--allow-dangerous", env_path.to_str().unwrap()])
+        .assert()
+        .success();
+    cmd(&dir).args(["exists", "EVIL NAME"]).assert().code(0);
+
+    // run refuses without the flag — naming the secret, never the value.
+    #[cfg(unix)]
+    {
+        let out = cmd(&dir)
+            .args(["run", "--secret", "EVIL NAME", "--", "sh", "-c", "exit 0"])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8(out.get_output().stderr.clone()).unwrap();
+        assert!(stderr.contains("EVIL NAME"));
+        assert!(!stderr.contains("sekrit"));
+
+        // ...and injects with it (env names with spaces are unreadable
+        // to sh, so observe via `env`; the value is test-only).
+        let out = cmd(&dir)
+            .args([
+                "run",
+                "--secret",
+                "EVIL NAME",
+                "--allow-dangerous-env",
+                "--",
+                "sh",
+                "-c",
+                "env",
+            ])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+        assert!(stdout.contains("EVIL NAME=sekrit"));
+    }
+}
+
+/// F6: usage errors exit 2, operational failures exit 1.
+#[test]
+fn exit_codes_usage_vs_operational() {
+    let dir = TempDir::new().unwrap();
+    cmd(&dir).arg("init").assert().success();
+
+    // Usage errors -> 2.
+    cmd(&dir).args(["search", ""]).assert().code(2);
+    cmd(&dir).args(["export"]).assert().code(2);
+    cmd(&dir)
+        .args(["run", "--", "sh", "-c", "exit 0"])
+        .assert()
+        .code(2);
+    cmd(&dir)
+        .args(["gen", "BAD=NAME", "--length", "16"])
+        .assert()
+        .code(2);
+
+    // Operational failures -> 1.
+    cmd(&dir).args(["get", "missing"]).assert().code(1);
+    cmd(&dir).args(["search", "zzz"]).assert().code(1);
+
+    // --help documents the codes.
+    cmd(&dir)
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Exit codes:"));
+}
+
+/// F7: new master passwords need 12+ chars on every path (env included);
+/// unlock attempts are never gated.
+#[test]
+fn short_master_passwords_rejected() {
+    use assert_cmd::Command as AssertCommand;
+    // init via env: rejected, and no vault is created.
+    let dir = TempDir::new().unwrap();
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env("SAGITARRIUS_PASSWORD", "short-11!!!");
+    c.arg("init").assert().failure().code(2);
+    assert!(!dir.path().join("vault.json").exists());
+
+    // Healthy vault, then a short rotation attempt via env: refused, and
+    // the old password keeps working.
+    cmd(&dir).arg("init").assert().success();
+    cmd(&dir).args(["add", "k", "v"]).assert().success();
+    let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+    c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+    c.env("SAGITARRIUS_PASSWORD", PW);
+    c.env("SAGITARRIUS_NEW_PASSWORD", "tiny");
+    c.args(["passwd"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("at least 12"));
+    cmd(&dir)
+        .args(["get", "k"])
+        .assert()
+        .success()
+        .stdout("v\n");
+}
+
+/// F1: a v0.2.1 vault (v3 layout, no manifest MAC) opens as legacy, gains
+/// a MAC on first write, and a later-stripped MAC is refused via state.
+#[test]
+fn manifest_mac_legacy_upgrade_and_strip_rejection() {
+    use assert_cmd::Command as AssertCommand;
+    const FIXTURE_PW: &str = "v3-nomac-fixture-pw";
+
+    let dir = TempDir::new().unwrap();
+    std::fs::copy(
+        "tests/fixtures/v3-nomac.json",
+        dir.path().join("vault.json"),
+    )
+    .unwrap();
+    let sag = || {
+        let mut c = AssertCommand::cargo_bin("sagitarrius").unwrap();
+        c.env("SAGITARRIUS_VAULT_DIR", dir.path());
+        c.env("SAGITARRIUS_PASSWORD", FIXTURE_PW);
+        c
+    };
+
+    // Legacy opens fine.
+    sag()
+        .args(["get", "OLDREC"])
+        .assert()
+        .success()
+        .stdout("old-value\n");
+
+    // First write upgrades: MAC appears in the header.
+    sag()
+        .args(["add", "NEWKEY", "new-value"])
+        .assert()
+        .success();
+    let raw = std::fs::read(dir.path().join("vault.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert!(v["header"]["manifest_mac"].is_string());
+
+    // Strip the MAC now that state records it: refused, fail closed.
+    let mut tampered: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    tampered["header"]
+        .as_object_mut()
+        .unwrap()
+        .remove("manifest_mac");
+    std::fs::write(
+        dir.path().join("vault.json"),
+        serde_json::to_vec(&tampered).unwrap(),
+    )
+    .unwrap();
+    sag()
+        .args(["get", "OLDREC"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("stripped"));
+}
+
 /// Real CLI migration: a genuine v2 vault file (tests/fixtures/v2-basic.json,
 /// password `v2-fixture-password`, committed) is converted by the actual
 /// `sagitarrius migrate` command.

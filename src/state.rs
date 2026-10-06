@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 struct TrustedState {
     vault_id: String,
     generation: u64,
+    /// True once a manifest MAC has been observed for this vault id.
+    /// A MAC-less v3 file arriving afterwards is a stripped MAC: refuse.
+    #[serde(default)]
+    has_manifest_mac: bool,
 }
 
 fn state_path() -> Result<std::path::PathBuf> {
@@ -63,6 +67,18 @@ pub fn verify_generation(vault: &Vault) -> Result<()> {
         // vault rename and the state update). The vault itself is authentic.
         return store_generation(vault);
     }
+    if state.has_manifest_mac && vault.is_v3() && !vault.has_manifest_mac() {
+        // The vault used to carry a manifest MAC and now does not: someone
+        // stripped it (downgrading metadata-integrity to legacy-accept).
+        // Fail closed; the way back is an explicit restore.
+        return Err(SagitarriusError::Other(
+            "vault manifest MAC is missing but trusted state records one — \
+             refusing: possible metadata-tamper (stripped manifest MAC). \
+             Restore explicitly with `sagitarrius snapshot restore <id>` or \
+             `sagitarrius backup restore <id>`"
+                .into(),
+        ));
+    }
     Ok(())
 }
 
@@ -75,6 +91,7 @@ pub fn store_generation(vault: &Vault) -> Result<()> {
     let state = TrustedState {
         vault_id: vault.vault_id(),
         generation: vault.generation(),
+        has_manifest_mac: vault.has_manifest_mac(),
     };
     let bytes = serde_json::to_vec_pretty(&state)?;
     crate::storage::write_state_atomic(&bytes)

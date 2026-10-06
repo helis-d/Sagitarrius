@@ -7,6 +7,13 @@ use clap::{Parser, Subcommand};
     about = "Sagitarrius — local-first secret manager",
     long_about = "Your secrets. Your machine. Your terminal.\n\
                   A tiny, local-first CLI secret manager for developers.",
+    after_help = "Exit codes:\n  \
+                  0  success (note: `exists` uses 1 for 'absent', and `run`\n  \
+                  propagates its child process exit code)\n  \
+                  1  operational failure (wrong password, missing secret,\n  \
+                  tampered vault, lockdown, stale generation, ...)\n  \
+                  2  usage error (bad flags/values, missing --secret or\n  \
+                  --plaintext, invalid names)",
     disable_help_subcommand = true
 )]
 pub struct Cli {
@@ -118,6 +125,9 @@ pub enum Commands {
         /// Overwrite existing secret values if present
         #[arg(short, long, default_value_t = false)]
         overwrite: bool,
+        /// Import names with shell-dangerous characters too (skipped otherwise)
+        #[arg(long, default_value_t = false)]
+        allow_dangerous: bool,
     },
 
     /// Export stored secrets in .env format (PLAINTEXT — see warning)
@@ -176,6 +186,9 @@ pub enum Commands {
         /// Secret name to inject. Repeatable. At least one is required.
         #[arg(long = "secret")]
         secret: Vec<String>,
+        /// Inject names with shell-dangerous characters too (refused otherwise)
+        #[arg(long, default_value_t = false)]
+        allow_dangerous_env: bool,
         /// Command and arguments (typically after `--`)
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         command: Vec<String>,

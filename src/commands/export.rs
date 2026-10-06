@@ -12,7 +12,7 @@ pub fn run(plaintext: bool, path: Option<String>) -> Result<i32> {
         // Fail closed: decrypting the vault to disk must be a deliberate,
         // visible act, never a default. Prefer `run --secret ...` so secrets
         // stay out of files entirely.
-        return Err(crate::error::SagitarriusError::Other(
+        return Err(crate::error::SagitarriusError::Usage(
             "plaintext export requires --plaintext (e.g. sagitarrius export --plaintext out.env); \
              prefer `run --secret NAME -- <cmd>` to avoid writing secrets to disk"
                 .into(),

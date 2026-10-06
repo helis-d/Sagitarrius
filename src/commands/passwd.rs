@@ -47,6 +47,11 @@ pub fn run() -> Result<i32> {
     }
     new_pw2.zeroize();
 
+    if let Err(e) = input::check_new_password(&new_pw1) {
+        new_pw1.zeroize();
+        return Err(e);
+    }
+
     vault.change_password(&new_pw1)?;
     new_pw1.zeroize();
 

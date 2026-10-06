@@ -52,7 +52,11 @@ pub fn dispatch(cmd: Commands) -> Result<i32> {
         Commands::Rename { old, new } => rename::run(old, new),
         Commands::Exists { name } => exists::run(name),
         Commands::Search { query } => search::run(query),
-        Commands::Import { path, overwrite } => import::run(path, overwrite),
+        Commands::Import {
+            path,
+            overwrite,
+            allow_dangerous,
+        } => import::run(path, overwrite, allow_dangerous),
         Commands::Export { plaintext, path } => export::run(plaintext, path),
         Commands::Audit => audit::run(),
         Commands::Migrate => migrate::run(),
@@ -81,6 +85,10 @@ pub fn dispatch(cmd: Commands) -> Result<i32> {
         },
         Commands::Status => status::run(),
         Commands::Lockdown { off } => lockdown::run(off),
-        Commands::Run { secret, command } => run::run(secret, command),
+        Commands::Run {
+            secret,
+            allow_dangerous_env,
+            command,
+        } => run::run(secret, allow_dangerous_env, command),
     }
 }

@@ -5,10 +5,10 @@ use crate::vault::Vault;
 use std::process::Command;
 use zeroize::Zeroize;
 
-pub fn run(selected: Vec<String>, args: Vec<String>) -> Result<i32> {
+pub fn run(selected: Vec<String>, allow_dangerous_env: bool, args: Vec<String>) -> Result<i32> {
     crate::storage::ensure_unlocked()?;
     if args.is_empty() {
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "no command specified; usage: sagitarrius run --secret NAME -- <command> [args...]"
                 .into(),
         ));
@@ -16,9 +16,24 @@ pub fn run(selected: Vec<String>, args: Vec<String>) -> Result<i32> {
     if selected.is_empty() {
         // Fail closed: the vault is never exposed wholesale to a child.
         // Name exactly what the child may see.
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "no secrets selected; pass at least one --secret NAME (e.g. sagitarrius run --secret OPENAI_API_KEY -- ./app)".into(),
         ));
+    }
+    // NUL can never survive into an environment block: reject up front,
+    // flag or not. Errors name the secret, never the value.
+    for name in &selected {
+        if name.contains('\0') {
+            return Err(SagitarriusError::Usage(format!(
+                "invalid secret name {name:?}: must not contain NUL"
+            )));
+        }
+        if !allow_dangerous_env && crate::vault::is_dangerous_name(name) {
+            return Err(SagitarriusError::Usage(format!(
+                "refusing dangerous secret name {name:?} for environment injection \
+                 (whitespace or shell metacharacters); pass --allow-dangerous-env to inject it anyway"
+            )));
+        }
     }
 
     let mut data = storage::read_vault()?;

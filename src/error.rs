@@ -23,9 +23,6 @@ pub enum SagitarriusError {
     #[error("secret {0:?} already exists")]
     SecretAlreadyExists(String),
 
-    #[error("secret name must not be empty")]
-    EmptySecretName,
-
     #[error("secret value must not be empty")]
     EmptySecretValue,
 
@@ -46,6 +43,22 @@ pub enum SagitarriusError {
 
     #[error("{0}")]
     Other(String),
+
+    /// CLI usage errors: bad flags, bad values, missing required selections.
+    /// Exit code 2 (see `exit_code`). Clap's own parse errors also exit 2.
+    #[error("{0}")]
+    Usage(String),
+}
+
+impl SagitarriusError {
+    /// 0 = success (not an error), 1 = operational failure, 2 = usage error.
+    /// `run` child exit codes pass through untouched.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            SagitarriusError::Usage(_) => 2,
+            _ => 1,
+        }
+    }
 }
 
 pub type Result<T> = std::result::Result<T, SagitarriusError>;

@@ -23,6 +23,14 @@ pub const MAX_SECRET_VALUE_LEN: usize = 1024 * 1024;
 pub const MAX_SECRET_NAME_LEN: usize = 256;
 pub const MAX_SECRETS: usize = 100_000;
 
+/// Read-time caps are 4x the write caps: an oversized vault still OPENS
+/// (bounded DoS protection only), so it can be inspected and shrunk.
+/// Writes always enforce the strict MAX_* limits first.
+pub const READ_MAX_VAULT_FILE_SIZE: u64 = 40 * 1024 * 1024;
+pub const READ_MAX_SECRET_VALUE_LEN: usize = 4 * 1024 * 1024;
+pub const READ_MAX_SECRET_NAME_LEN: usize = 1024;
+pub const READ_MAX_SECRETS: usize = 400_000;
+
 /// Hard bounds for attacker-controlled KDF parameters in the vault header.
 /// Checked **before** running Argon2: a tampered header claiming gigabytes
 /// of RAM or thousands of threads must fail fast instead of exhausting the
@@ -301,9 +309,17 @@ impl VaultV2 {
         })
     }
 
-    pub fn import_env(&mut self, env_text: &str, overwrite: bool) -> (usize, usize) {
+    pub fn import_env(
+        &mut self,
+        env_text: &str,
+        overwrite: bool,
+        allow_dangerous: bool,
+    ) -> (usize, usize, Vec<String>) {
         let mut added = 0;
         let mut skipped = 0;
+        let mut dangerous = Vec::new();
+        // Strip a UTF-8 BOM so the first key is not poisoned by it.
+        let env_text = env_text.strip_prefix('\u{FEFF}').unwrap_or(env_text);
 
         for line in env_text.lines() {
             let line = line.trim();
@@ -319,7 +335,10 @@ impl VaultV2 {
             let key = k.trim();
             let val_trimmed = v.trim();
 
-            let val = parse_env_value(val_trimmed);
+            let Some(val) = parse_env_value(val_trimmed) else {
+                skipped += 1;
+                continue;
+            };
 
             // Reject garbage that would spoof .env/terminal output or bypass
             // the EmptySecretValue rule enforced by `add`/`edit`.
@@ -335,6 +354,13 @@ impl VaultV2 {
                 skipped += 1;
                 continue;
             }
+            // Dangerous names (spaces, shell metacharacters, ...) are only
+            // imported with explicit opt-in; otherwise skip loudly.
+            if !allow_dangerous && is_dangerous_name(key) {
+                skipped += 1;
+                dangerous.push(key.to_string());
+                continue;
+            }
 
             if !overwrite && self.exists(key) {
                 skipped += 1;
@@ -347,7 +373,7 @@ impl VaultV2 {
                 added += 1;
             }
         }
-        (added, skipped)
+        (added, skipped, dangerous)
     }
 
     /// Exported `.env` text plus the names that were skipped because they
@@ -482,6 +508,14 @@ impl Vault {
         match self {
             Vault::V2(_) => false,
             Vault::V3(v) => v.has_recovery(),
+        }
+    }
+
+    /// Whether the loaded file carries a manifest MAC (v3 only).
+    pub fn has_manifest_mac(&self) -> bool {
+        match self {
+            Vault::V2(_) => false,
+            Vault::V3(v) => v.header.manifest_mac.is_some(),
         }
     }
 
@@ -626,14 +660,21 @@ impl Vault {
         }
     }
 
-    pub fn import_env(&mut self, env_text: &str, overwrite: bool) -> (usize, usize) {
+    pub fn import_env(
+        &mut self,
+        env_text: &str,
+        overwrite: bool,
+        allow_dangerous: bool,
+    ) -> (usize, usize, Vec<String>) {
         // Shared parser lives on V2; route through a scratch V2 view is
         // wasteful, so v3 validates inline with identical rules.
         match self {
-            Vault::V2(v) => v.import_env(env_text, overwrite),
+            Vault::V2(v) => v.import_env(env_text, overwrite, allow_dangerous),
             Vault::V3(v) => {
                 let mut added = 0;
                 let mut skipped = 0;
+                let mut dangerous = Vec::new();
+                let env_text = env_text.strip_prefix('\u{FEFF}').unwrap_or(env_text);
                 for line in env_text.lines() {
                     let line = line.trim();
                     if line.is_empty() || line.starts_with('#') {
@@ -645,7 +686,10 @@ impl Vault {
                         continue;
                     };
                     let key = k.trim();
-                    let val = parse_env_value(val.trim());
+                    let Some(val) = parse_env_value(val.trim()) else {
+                        skipped += 1;
+                        continue;
+                    };
                     if key.is_empty()
                         || val.is_empty()
                         || key.len() > MAX_SECRET_NAME_LEN
@@ -653,6 +697,11 @@ impl Vault {
                         || validate_secret_name(key).is_err()
                     {
                         skipped += 1;
+                        continue;
+                    }
+                    if !allow_dangerous && is_dangerous_name(key) {
+                        skipped += 1;
+                        dangerous.push(key.to_string());
                         continue;
                     }
                     if !overwrite && v.find_index(key).is_some() {
@@ -669,7 +718,7 @@ impl Vault {
                         added += 1;
                     }
                 }
-                (added, skipped)
+                (added, skipped, dangerous)
             }
         }
     }
@@ -834,16 +883,45 @@ fn is_valid_env_name(name: &str) -> bool {
     chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
 }
 
+/// Portable dotenv-style names: safe in `.env` files and most shells, but
+/// not valid POSIX identifiers (e.g. `github-token`). Imported with at most
+/// a warning; `run` skips them with a warning (never injects).
+pub(crate) fn is_portable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
+
+/// Dangerous names (D02): anything outside the portable set — whitespace,
+/// shell metacharacters, `=`, leading `-`, control chars (incl. NUL).
+/// `run` refuses these unless `--allow-dangerous-env`; `import` skips them
+/// unless `--allow-dangerous`. NUL is refused unconditionally (no OS can
+/// carry it in an env var).
+pub(crate) fn is_dangerous_name(name: &str) -> bool {
+    if name.contains('\0') {
+        return true;
+    }
+    if is_valid_env_name(name) || is_portable_name(name) {
+        return false;
+    }
+    true
+}
+
 /// Structural validation for secret names. Deliberately permissive about
 /// dashes/dots (existing vaults and tests use `github-token`), but rejects
 /// what would spoof terminal/`.env` output or break the format:
 /// empty, over-long, `=`, newlines/NUL and other ASCII control codes.
 pub(crate) fn validate_secret_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(SagitarriusError::EmptySecretName);
+        return Err(SagitarriusError::Usage(
+            "secret name must not be empty".into(),
+        ));
     }
     if name.len() > MAX_SECRET_NAME_LEN {
-        return Err(SagitarriusError::Other(format!(
+        return Err(SagitarriusError::Usage(format!(
             "secret name must be at most {MAX_SECRET_NAME_LEN} bytes"
         )));
     }
@@ -853,7 +931,7 @@ pub(crate) fn validate_secret_name(name: &str) -> Result<()> {
         || name.contains('\0')
         || name.chars().any(|c| c.is_ascii_control())
     {
-        return Err(SagitarriusError::Other(format!(
+        return Err(SagitarriusError::Usage(format!(
             "invalid secret name {name:?}: must not contain '=', newlines or control characters"
         )));
     }
@@ -880,14 +958,16 @@ pub(crate) fn validate_kdf_params(p: KdfParams) -> Result<()> {
     Ok(())
 }
 
-/// Resource caps for a decrypted payload. Only sizes/counts — never name
-/// content, so vaults written by older versions always stay openable.
+/// Resource caps for a decrypted payload. Uses READ caps (above write
+/// limits): an oversized vault still opens so it can be inspected and
+/// shrunk. Only sizes/counts — never name content, so vaults written by
+/// older versions always stay openable.
 fn validate_payload(payload: &Payload) -> Result<()> {
-    if payload.secrets.len() > MAX_SECRETS {
+    if payload.secrets.len() > READ_MAX_SECRETS {
         return Err(SagitarriusError::InvalidVaultFormat);
     }
     for (name, entry) in &payload.secrets {
-        if name.len() > MAX_SECRET_NAME_LEN || entry.value.len() > MAX_SECRET_VALUE_LEN {
+        if name.len() > READ_MAX_SECRET_NAME_LEN || entry.value.len() > READ_MAX_SECRET_VALUE_LEN {
             return Err(SagitarriusError::InvalidVaultFormat);
         }
     }
@@ -930,15 +1010,24 @@ fn escape_env_value(v: &str) -> String {
     if !env_value_needs_quotes(v) {
         return v.to_string();
     }
+    // Single quotes when possible: everything inside is literal, both for
+    // shells and for our importer. Possible unless the value itself holds a
+    // single quote or a line break (line-based .env cannot hold those raw).
+    if !v.contains('\'') && !v.contains('\n') && !v.contains('\r') {
+        return format!("'{v}'");
+    }
+    // Otherwise double quotes with exactly the shell-portable escapes:
+    // backslash, double quote, dollar, backtick, newline (+ CR, same reason).
     let mut out = String::with_capacity(v.len() + 2);
     out.push('"');
     for c in v.chars() {
         match c {
             '\\' => out.push_str("\\\\"),
             '"' => out.push_str("\\\""),
+            '$' => out.push_str("\\$"),
+            '`' => out.push_str("\\`"),
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
             _ => out.push(c),
         }
     }
@@ -946,15 +1035,72 @@ fn escape_env_value(v: &str) -> String {
     out
 }
 
-fn parse_env_value(raw: &str) -> String {
-    if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
-        unescape_double_quoted(&raw[1..raw.len() - 1])
-    } else if raw.len() >= 2 && raw.starts_with('\'') && raw.ends_with('\'') {
-        // Single-quoted: literal, no escape processing (shell-like).
-        raw[1..raw.len() - 1].to_string()
-    } else {
-        raw.to_string()
+/// Parse a raw (already trimmed) value. Returns `None` when the entry must
+/// be skipped: ambiguous trailing text after a closing quote is never
+/// guessed at (D04) — it is counted as skipped instead.
+fn parse_env_value(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix('"') {
+        // Double-quoted: the value ends at the first UNESCAPED quote.
+        let mut inner = String::new();
+        let mut tail = String::new();
+        let mut closed = false;
+        let mut chars = rest.chars();
+        while let Some(c) = chars.next() {
+            if closed {
+                tail.push(c);
+                continue;
+            }
+            if c == '\\' {
+                // Preserve the pair; the shared unescaper interprets it.
+                inner.push('\\');
+                if let Some(n) = chars.next() {
+                    inner.push(n);
+                }
+            } else if c == '"' {
+                closed = true;
+            } else {
+                inner.push(c);
+            }
+        }
+        if !closed {
+            // Unclosed quote: legacy behavior — the whole thing is literal.
+            return Some(raw.to_string());
+        }
+        let tail = tail.trim();
+        if !tail.is_empty() && !tail.starts_with('#') {
+            return None;
+        }
+        return Some(unescape_double_quoted(&inner));
     }
+    if let Some(rest) = raw.strip_prefix('\'') {
+        // Single quotes have no escapes: value ends at the next quote.
+        match rest.find('\'') {
+            Some(end) => {
+                let tail = rest[end + 1..].trim();
+                if !tail.is_empty() && !tail.starts_with('#') {
+                    return None;
+                }
+                return Some(rest[..end].to_string());
+            }
+            None => return Some(raw.to_string()), // unclosed: legacy literal
+        }
+    }
+    // Unquoted: dotenv inline comment = '#' at the start or after whitespace.
+    Some(strip_inline_comment(raw))
+}
+
+/// Cut `value # comment` down to `value`. A `#` glued to text (`a#b`)
+/// stays — only whitespace-separated comments count.
+fn strip_inline_comment(v: &str) -> String {
+    let mut prev_ws = false;
+    for (off, c) in v.char_indices() {
+        if c == '#' && (off == 0 || prev_ws) {
+            return v[..off].trim_end().to_string();
+        }
+        prev_ws = c == ' ' || c == '\t';
+    }
+    v.to_string()
 }
 
 fn unescape_double_quoted(inner: &str) -> String {
@@ -968,9 +1114,12 @@ fn unescape_double_quoted(inner: &str) -> String {
         match chars.next() {
             Some('n') => out.push('\n'),
             Some('r') => out.push('\r'),
-            Some('t') => out.push('\t'),
             Some('\\') => out.push('\\'),
             Some('"') => out.push('"'),
+            Some('$') => out.push('$'),
+            Some('`') => out.push('`'),
+            // Legacy compat: older exports emitted \t and accepted \'.
+            Some('t') => out.push('\t'),
             Some('\'') => out.push('\''),
             Some(other) => {
                 out.push('\\');
@@ -1063,7 +1212,7 @@ mod tests {
     fn import_export_env() {
         let mut v = Vault::create(PW).unwrap();
         let env_content = "FOO=bar\nBAR=\"baz\"\n# comment\nexport QUX='val'\n";
-        let (added, skipped) = v.import_env(env_content, false);
+        let (added, skipped, _) = v.import_env(env_content, false, false);
         assert_eq!(added, 3);
         assert_eq!(skipped, 0);
 
@@ -1125,16 +1274,59 @@ mod tests {
     }
 
     #[test]
+    fn import_bom_comments_and_trailing_text() {
+        let mut v = Vault::create(PW).unwrap();
+        // BOM stripped; inline comments only outside quotes and only after
+        // whitespace; trailing text after a closing quote skips the entry.
+        let text = "\u{FEFF}BOMMED=1\nA=2 # comment\nB=\"x # y\"\nC=nospace#kept\n\
+            D=\"v\" \nE=\"v\" # c\nF=\"v\" garbage\nG='w' junk\n";
+        let (added, skipped, _) = v.import_env(text, false, false);
+        assert_eq!((added, skipped), (6, 2));
+        assert_eq!(v.get("BOMMED").as_deref(), Some("1"));
+        assert_eq!(v.get("A").as_deref(), Some("2"));
+        assert_eq!(v.get("B").as_deref(), Some("x # y"));
+        assert_eq!(v.get("C").as_deref(), Some("nospace#kept"));
+        assert_eq!(v.get("D").as_deref(), Some("v"));
+        assert_eq!(v.get("E").as_deref(), Some("v"));
+        assert!(v.get("F").is_none());
+        assert!(v.get("G").is_none());
+    }
+
+    #[test]
     fn import_rejects_garbage_and_empty() {
         let mut v = Vault::create(PW).unwrap();
         // no '=', empty key, empty value, control chars, over-long handled
-        let (added, skipped) = v.import_env("NOEQUALS\n=novalue\nEMPTY=\n", false);
+        let (added, skipped, _) = v.import_env("NOEQUALS\n=novalue\nEMPTY=\n", false, false);
         assert_eq!(added, 0);
         assert_eq!(skipped, 3);
         // '=' in name would corrupt .env output; must be skipped
-        let (added, _) = v.import_env("A=B=C\n", false);
+        let (added, _, _) = v.import_env("A=B=C\n", false, false);
         assert_eq!(added, 1);
         assert_eq!(v.get("A").as_deref(), Some("B=C"));
+    }
+
+    #[test]
+    fn import_dangerous_names_need_opt_in() {
+        let mut v = Vault::create(PW).unwrap();
+        // Space + shell metacharacters: skipped with the name reported...
+        let (added, skipped, dangerous) =
+            v.import_env("EVIL NAME=x\nFINE=1\nA;B=2\n", false, false);
+        assert_eq!((added, skipped), (1, 2));
+        assert_eq!(dangerous.len(), 2);
+        assert!(v.get("FINE").is_some());
+        assert!(v.get("EVIL NAME").is_none());
+        // ...unless explicitly allowed.
+        let (added, _, dangerous) = v.import_env("EVIL NAME=x\n", true, true);
+        assert_eq!(added, 1);
+        assert!(dangerous.is_empty());
+        assert_eq!(v.get("EVIL NAME").as_deref(), Some("x"));
+        // Portable-but-not-POSIX names (dashes) never needed the flag.
+        let (added, _, dangerous) = v.import_env("ok-name=1\n", false, false);
+        assert_eq!(added, 1);
+        assert!(dangerous.is_empty());
+        // NUL is rejected at the structural layer (never importable).
+        let (added, skipped, _) = v.import_env("A\x00B=x\n", false, true);
+        assert_eq!((added, skipped), (0, 1));
     }
 
     #[test]
@@ -1150,15 +1342,119 @@ mod tests {
     fn export_quotes_special_values() {
         let mut v = Vault::create(PW).unwrap();
         v.set("SPACED", "hello world #hash=eq");
+        v.set("QUOTED", "she said \"hi\"");
+        v.set("DOLLAR", "costs $5 and `tick`");
+        v.set("MULTILINE", "line1\nline2");
         v.set("bad-name", "kept-in-vault");
         let (out, skipped) = v.export_env();
-        assert!(out.contains("SPACED=\"hello world #hash=eq\""));
-        assert!(!out.contains("bad-name"));
+        // Single quotes whenever possible...
+        assert!(out.contains("SPACED='hello world #hash=eq'"));
+        assert!(out.contains("QUOTED='she said \"hi\"'"));
+        assert!(out.contains("DOLLAR='costs $5 and `tick`'"));
+        // ...double quotes with escapes only when single quotes cannot hold it.
+        assert!(out.contains("MULTILINE=\"line1\\nline2\""));
+        assert!(!out.contains("bad-name="));
         assert_eq!(skipped, vec!["bad-name".to_string()]);
         let mut v2 = Vault::create(PW).unwrap();
-        let (added, _) = v2.import_env(&out, false);
-        assert_eq!(added, 1);
+        let (added, _, _) = v2.import_env(&out, false, false);
+        assert_eq!(added, 4);
         assert_eq!(v2.get("SPACED").as_deref(), Some("hello world #hash=eq"));
+        assert_eq!(v2.get("QUOTED").as_deref(), Some("she said \"hi\""));
+        assert_eq!(v2.get("DOLLAR").as_deref(), Some("costs $5 and `tick`"));
+        assert_eq!(v2.get("MULTILINE").as_deref(), Some("line1\nline2"));
+    }
+
+    /// Deterministic xorshift64* — a property test without new dependencies.
+    /// Fixed seed, 300 adversarial values through the real export/import
+    /// path. One vault holds all values (a Vault::create per value would
+    /// burn 600 Argon2 runs); names stay distinct so each value is checked.
+    #[test]
+    fn export_import_roundtrip_property() {
+        let alphabet: Vec<char> = "abZ019 _-./:@%+,='#\"\\$`!&;<>|(){}[]^~?\t\n\r"
+            .chars()
+            .collect();
+        let mut state: u64 = 0x243F_6A88_85A3_08D3;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            state.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        let mut values = Vec::new();
+        for _ in 0..300 {
+            let len = 1 + (next() % 48) as usize;
+            values.push(
+                (0..len)
+                    .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
+                    .collect::<String>(),
+            );
+        }
+        let mut v = Vault::create(PW).unwrap();
+        for (i, value) in values.iter().enumerate() {
+            v.set(&format!("PROP_{i}"), value);
+        }
+        let (out, skipped) = v.export_env();
+        assert!(skipped.is_empty());
+        let mut v2 = Vault::create(PW).unwrap();
+        let (added, skipped, _) = v2.import_env(&out, false, false);
+        assert_eq!((added, skipped), (300, 0));
+        for (i, value) in values.iter().enumerate() {
+            let name = format!("PROP_{i}");
+            assert_eq!(
+                v2.get(&name).as_deref(),
+                Some(value.as_str()),
+                "no round-trip for {value:?}"
+            );
+        }
+    }
+
+    /// The exported file must be sourceable by POSIX sh with identical
+    /// values. Shells cannot represent newlines portably, so newline values
+    /// are excluded here (they round-trip through our own importer, tested
+    /// above) — everything else must survive `. file` byte-for-byte.
+    #[cfg(unix)]
+    #[test]
+    fn export_sources_cleanly_in_sh() {
+        use std::io::Write;
+        let values = [
+            "plain",
+            "hello world",
+            "a=b",
+            "hash#tag",
+            "dollar$home",
+            "back`tick",
+            "say \"hi\"",
+            "it's",
+            "back\\slash",
+            "semi;colon",
+            "pipe|line",
+            "star*quest",
+            "tab\there",
+            "trail ",
+            " lead",
+            "uni-héllo",
+        ];
+        let mut v = Vault::create(PW).unwrap();
+        for (i, val) in values.iter().enumerate() {
+            v.set(&format!("SH_{i}"), val);
+        }
+        let (out, _) = v.export_env();
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(out.as_bytes()).unwrap();
+        let path = f.path().to_str().unwrap().to_string();
+        for (i, want) in values.iter().enumerate() {
+            let script = format!(". \"{path}\"; printf '%s' \"$SH_{i}\"");
+            let got = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .output()
+                .expect("sh must exist on unix CI");
+            assert!(got.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&got.stdout).as_ref(),
+                *want,
+                "sh round-trip failed for {want:?}"
+            );
+        }
     }
 
     #[test]
@@ -1201,6 +1497,36 @@ mod tests {
     }
 
     #[test]
+    fn migrate_rejects_oversized_entry_before_writing() {
+        use base64::{engine::general_purpose::STANDARD as B64m, Engine};
+        // A v2 entry over the write cap must fail migration with a clear
+        // error — never produce a vault that cannot be opened.
+        let params = crate::crypto::KdfParams::default();
+        let salt = [13u8; crate::crypto::SALT_LEN];
+        let key = crate::crypto::derive_key(PW, &salt, params).unwrap();
+        let header = VaultHeader {
+            magic: MAGIC.into(),
+            version: FORMAT_VERSION,
+            kdf: "argon2id".into(),
+            kdf_params: params,
+            salt: B64m.encode(salt),
+        };
+        let big = "y".repeat(MAX_SECRET_VALUE_LEN + 1);
+        let payload = serde_json::json!({"secrets": {"BIG": {"value": big, "created_at": 1, "updated_at": 1}}});
+        let aad = serde_json::to_vec(&header).unwrap();
+        let plain = serde_json::to_vec(&payload).unwrap();
+        let (nonce, ct) = crate::crypto::encrypt(&key, &plain, &aad).unwrap();
+        let file = VaultFile {
+            header,
+            nonce: B64m.encode(nonce),
+            ciphertext: B64m.encode(&ct),
+        };
+        let v2bytes = serde_json::to_vec_pretty(&file).unwrap();
+        let err = migrate_v2_to_v3(PW, &v2bytes).unwrap_err();
+        assert!(err.to_string().contains("too large"));
+    }
+
+    #[test]
     fn kdf_params_out_of_bounds_rejected() {
         let mut v = Vault::create(PW).unwrap();
         let bytes = v.serialize().unwrap();
@@ -1221,22 +1547,20 @@ mod tests {
 
     #[test]
     fn oversized_payload_rejected() {
-        // validate_payload is the unlock-time gate: oversized entries must
-        // fail closed. (Forging vault ciphertext in-test is unnecessary;
-        // the gate itself is what unlock() calls.)
-        let mut oversized = Payload::default();
-        oversized.secrets.insert(
+        // Unlock-time gate uses READ caps: absurd sizes fail closed...
+        let mut absurd = Payload::default();
+        absurd.secrets.insert(
             "k".into(),
             SecretEntry {
-                value: "x".repeat(MAX_SECRET_VALUE_LEN + 1),
+                value: "x".repeat(READ_MAX_SECRET_VALUE_LEN + 1),
                 created_at: 0,
                 updated_at: 0,
             },
         );
-        assert!(validate_payload(&oversized).is_err());
+        assert!(validate_payload(&absurd).is_err());
 
         let mut too_many = Payload::default();
-        for i in 0..(MAX_SECRETS + 1) {
+        for i in 0..(READ_MAX_SECRETS + 1) {
             too_many.secrets.insert(
                 format!("k{i}"),
                 SecretEntry {
@@ -1247,6 +1571,21 @@ mod tests {
             );
         }
         assert!(validate_payload(&too_many).is_err());
+    }
+
+    #[test]
+    fn read_caps_open_oversized_for_shrinking() {
+        // Between write cap and read cap: opens fine (shrinkable).
+        let mut big = Payload::default();
+        big.secrets.insert(
+            "k".into(),
+            SecretEntry {
+                value: "x".repeat(MAX_SECRET_VALUE_LEN + 1),
+                created_at: 0,
+                updated_at: 0,
+            },
+        );
+        assert!(validate_payload(&big).is_ok());
 
         let sane = Payload::default();
         assert!(validate_payload(&sane).is_ok());

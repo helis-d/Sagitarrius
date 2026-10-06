@@ -14,12 +14,12 @@ pub fn run(
     crate::vault::validate_secret_name(&name)?;
     crate::storage::ensure_unlocked()?;
     let kind = crate::vault_v3::RecordKind::parse(&kind).ok_or_else(|| {
-        SagitarriusError::Other(
+        SagitarriusError::Usage(
             "unknown --kind (expected secret|password|note|credential|document)".into(),
         )
     })?;
     if kind == crate::vault_v3::RecordKind::File {
-        return Err(SagitarriusError::Other(
+        return Err(SagitarriusError::Usage(
             "file records are created with `sagitarrius file put <path>`".into(),
         ));
     }
