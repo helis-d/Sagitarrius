@@ -8,6 +8,17 @@ feature branches per phase. Never commit to `main` directly.
 Order: F1 → F9 (AGENTS.md). Per finding: failing regression test first,
 minimal fix, evidence in PROGRESS.md.
 
+## Phase 1 reopen — evidence-based review gaps (done, same branch)
+
+- [x] F4b loader/shell-startup denylist (+ D02b, portable /usr/bin/env test)
+- [x] F5b NUL in values (add/edit/import/run/file-paths)
+- [x] F6b exit 1 = clean negatives only, every error = 2 (D03 superseded)
+- [x] F10 missing-state warning + ManifestIntegrity message
+- [x] F11 unicode names, empty-env-as-unset, export --force, dir chmod rule,
+  passwd menu text
+- [x] cargo audit run for real (clean: 1290 advisories, 115 crates, exit 0)
+- [x] clippy green on stable 1.99.0; full suite 113/113 from real output
+
 - [x] F1 manifest MAC (HKDF `SAGITARRIUS/v3/manifest`, length-prefixed
   encoding, verify-after-unlock, recompute-on-write, legacy upgrade path,
   strip-rejection via trusted state, names-encryption decision)
