@@ -1,5 +1,29 @@
 # PROGRESS.md — session evidence log
 
+## T5 - DONE - 2026-10-07
+- Content was merged to main earlier; this task verified + adjusted it:
+- Content was merged to main earlier; this task verified + adjusted it:
+  reporting = GitHub Private Vulnerability Reporting + literal
+  `SECURITY_CONTACT_TODO` (SECURITY.md:6-16); replay claim now states the
+  precondition inline (SECURITY.md:23-25, threat-model.md:14-16) with the
+  both-files-replaced case in out-of-scope (SECURITY.md:44-45,
+  threat-model.md:34-35); zeroization/hardening/review/recommendations
+  sections present (SECURITY.md:157-196); release-security.md notes
+  artifacts exist per-run but nothing published.
+- Traceability (U-5 resolved): `cargo tree -e features -i argon2` shows
+  alloc/default/password-hash/rand — NO `zeroize` feature, and even with
+  it only small intermediaries (argon2-0.5.3 lib.rs:322-323,501-504)
+  are wiped, never the 64 MiB block memory. Zeroized: DerivedKey +
+  ZeroizeOnDrop (crypto.rs:44-45), VaultMasterKey (envelope.rs:33-34),
+  password Strings on all paths, plaintext buffers post-crypto,
+  run name/value copies, recovery codes. mlock/VirtualLock/core-dump:
+  zero hits repo-wide. No superlatives in either file.
+- Human action: enable Settings -> Security -> Private vulnerability
+  reporting. No response-time statement added (no approval).
+- Discrepancies: F-9's "missing qualification" was already fixed on main;
+  only the inline precondition needed tightening.
+- Open questions: none.
+
 ## T2 - DONE - 2026-10-07
 - Changes (`8e90580`, `dba364c`): ci.yml gets top-level
   `permissions: contents: read`, `concurrency` cancel-in-progress,
