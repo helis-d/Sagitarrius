@@ -1,6 +1,42 @@
 # Changelog
 
-## 0.2.1 — hardening patch (no format break)
+## 0.3.0 — trust hardening (vault format additive: manifest MAC)
+
+> Back up before upgrading (`snapshot create` or `backup create --to`).
+> 0.3.0 opens 0.2.1 vaults and adds the manifest MAC on first write.
+> Downgrade reads work, but a 0.2.1 write silently drops the MAC — 0.3.0
+> then refuses the file as stripped until you restore explicitly. See
+> docs/vault-and-crypto.md.
+
+### Breaking / behavioral changes
+
+- `run` requires `--secret`; dangerous variable names refused unless
+  `--allow-dangerous-env` (loader/shell-startup denylist: `LD_PRELOAD`,
+  `DYLD_*`, `BASH_ENV`, `PATH`, …); opt-in now actually injects OS-legal
+  names.
+- `import` skips dangerous names unless `--allow-dangerous` (warns loudly).
+- `export` requires `--plaintext` and refuses to overwrite without
+  `--force`.
+- Exit codes 0/1/2 semantics: 1 = clean negative result (`exists` absent,
+  `search` no match, `audit` findings), 2 = every error/usage.
+- Minimum master password length 12 on init/passwd/recovery reset
+  (existing vaults still unlock).
+- v3 manifest MAC with automatic upgrade of legacy v3 vaults on first
+  write; stripped MACs refused via trusted state.
+- Vault write cap 10 MiB enforced pre-write (read cap higher so oversized
+  vaults still open and shrink).
+- NUL bytes in values rejected (add/edit/import/run/file paths).
+- Names reject C1/bidi/zero-width characters.
+- `.env` import rules: BOM stripped, inline comments outside quotes,
+  trailing text after a closing quote skips the entry.
+- Shell quoting: single quotes when possible, else double quotes escaping
+  `\ " $ ` and newline; POSIX-sh sourceable, re-import round-trips.
+
+### Other
+
+- MSRV is 1.85 (verified); CI matrix + cargo-audit + MSRV jobs; release
+  pipeline with checksums; smoke-test scripts; `status`, `lockdown`,
+  snapshots/backups/recovery (see 0.2.0 entry for the originals).
 
 - Fixed: `migrate` wiped the password before re-opening the migrated
   vault, failing every real v2→v3 migration. Password lifetime corrected

@@ -1,12 +1,16 @@
 [package]
 name = "sagitarrius"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.85"
 description = "Local-first secret manager for developers"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/helis-d/Sagitarrius"
+homepage = "https://github.com/helis-d/Sagitarrius"
+documentation = "https://github.com/helis-d/Sagitarrius"
+keywords = ["secrets", "password-manager", "cli", "encryption", "vault"]
+categories = ["command-line-utilities", "cryptography"]
 
 [[bin]]
 name = "sagitarrius"
