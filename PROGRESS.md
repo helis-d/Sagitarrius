@@ -1,5 +1,28 @@
 # PROGRESS.md — session evidence log
 
+## T2 - DONE - 2026-10-07
+- Changes (`8e90580`, `dba364c`): ci.yml gets top-level
+  `permissions: contents: read`, `concurrency` cancel-in-progress,
+  `--locked` on clippy/test; release.yml gets `macos-13` →
+  `macos-15-intel`, `draft: true` + `fail_on_unmatched_files: true`,
+  checksums via `cd dist && sha256sum -- *.tar.gz *.zip` (self-excluding),
+  top-level read permissions; new `.github/dependabot.yml` (actions+cargo
+  weekly, grouped minor/patch, no auto-merge).
+- Action SHAs resolved live, not invented: checkout v4
+  `11d5960a…`, upload-artifact v4 `ea165f8d…`, download-artifact v4
+  `d3f86a10…` (all `refs/tags/v4`, no `^{}` = lightweight tags, SHA IS the
+  commit); dtolnay has no version tags → pinned master HEAD `7e38f4b4…`
+  with `toolchain: stable`/`1.85` inputs preserving selection semantics;
+  softprops v2 `3bb12739…` (lightweight). Version comments on every use.
+- Runner labels: macos-13 retired (deprecation from Sep 2025 per
+  actions/runner-images#13045); Intel successor is `macos-15-intel`
+  (macOS 15, until Aug 2027); macos-14 itself retires 2026-11-02 with
+  October brownouts (changelog 2026-10-01) but we never used it.
+  aarch64-linux stays omitted (documented, needs cross toolchain).
+- Evidence: `actionlint 1.7.12` on both files → exit 0, no findings.
+- Discrepancies: none vs F-5 (all confirmed pre-change).
+- Open questions: attestation proposal left for DECISIONS (escalation item).
+
 ## T1 - DONE - 2026-10-07
 - Change: `src/banner.rs` `logo_is_pure_ascii` — vacuous `!LOGO_ART.is_empty()`
   replaced with content guards (`#`/`=`/`@` raster language) via a local
