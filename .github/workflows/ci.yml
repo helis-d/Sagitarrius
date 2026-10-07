@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+# Least privilege by default; no job here needs to write anything.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     strategy:
@@ -11,9 +19,10 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master snapshot; toolchain input below selects the channel
         with:
+          toolchain: stable
           components: clippy, rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets --all-features -- -D warnings
@@ -22,15 +31,18 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master snapshot; toolchain input below selects the channel
+        with:
+          toolchain: stable
       - run: cargo install cargo-audit --locked
       - run: cargo audit
 
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master snapshot; toolchain input below selects the channel
+        with:
+          toolchain: 1.85
       - run: cargo check --locked --all-targets
-
