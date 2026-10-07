@@ -1,13 +1,18 @@
 name: Release
 
-# Production release builds. Tags (v*) publish a GitHub Release with
+# Production release builds. Tags (v*) publish a *DRAFT* GitHub Release with
 # archives + SHA256SUMS (no signatures yet — see docs/release-security.md).
-# workflow_dispatch allows dry runs from any branch.
+# workflow_dispatch allows dry runs from any branch (publish stays gated on
+# tag refs and never runs for dispatches).
 on:
   push:
     tags:
       - "v*"
   workflow_dispatch:
+
+# Least privilege by default; only the publish job writes releases.
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -22,7 +27,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             name: sagitarrius-windows-x86_64
             archive: zip
-          - os: macos-13
+          # NOTE: macos-13 is retired by GitHub (deprecation from Sep 2025;
+          # see actions/runner-images#13045). Intel builds run on
+          # macos-15-intel (macOS 15, available until Aug 2027).
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             name: sagitarrius-macos-x86_64
             archive: tar.gz
@@ -34,9 +42,10 @@ jobs:
           # hosted runners don't provide. See docs/development.md.
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master snapshot; toolchain input below selects the channel
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - run: cargo build --release --locked --target ${{ matrix.target }}
       - name: Package (unix tar.gz)
@@ -55,7 +64,7 @@ jobs:
           New-Item -ItemType Directory -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/sagitarrius.exe", "README.md", "LICENSE" -Destination $staging
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.name }}.${{ matrix.archive }}
           path: ${{ matrix.name }}.${{ matrix.archive }}
@@ -64,13 +73,14 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
-      - run: sha256sum ./* > SHA256SUMS.txt
-        working-directory: dist
-      - uses: actions/upload-artifact@v4
+      # Explicit archive globs (never `*`): SHA256SUMS.txt must list exactly
+      # the release archives — never itself — so `sha256sum -c` works.
+      - run: cd dist && sha256sum -- *.tar.gz *.zip > SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: SHA256SUMS.txt
           path: dist/SHA256SUMS.txt
@@ -82,11 +92,13 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: dist/*
           generate_release_notes: true
+          draft: true
+          fail_on_unmatched_files: true
