@@ -1,5 +1,44 @@
 # PROGRESS.md — session evidence log
 
+## T1 - DONE - 2026-10-07
+- Change: `src/banner.rs` `logo_is_pure_ascii` — vacuous `!LOGO_ART.is_empty()`
+  replaced with content guards (`#`/`=`/`@` raster language) via a local
+  binding (no `#[allow]`).
+- Evidence: `cargo fmt --check` exit 0; `cargo clippy --locked
+  --all-targets --all-features -- -D warnings` exit 0 (rustc 1.99.0);
+  banner tests 2/2 pass.
+- Discrepancies: F-3's clippy failure does not reproduce on this toolchain
+  (fixed anyway — the new assertions are strictly stronger).
+- Open questions: none.
+
+## T0 baseline — release/v0.3.0-blockers from main@7b6a5b7 (2026-10-07)
+
+- Env: rustc/cargo 1.99.0 stable (active, `rustup update stable` = unchanged),
+  Windows x64, gh 2.97.0 present but NOT authenticated, actionlint absent.
+  Branch `release/v0.3.0-blockers` created from `origin/main`; tree was
+  line-ending noise only (reverted, nothing lost).
+- Gates: `fmt --check` PASS; `clippy --locked --all-targets --all-features
+  -- -D warnings` PASS (F-3 does NOT reproduce on 1.99.0 — see discrepancy);
+  `cargo test --locked -j 2` **119/119** (59+41+3+15+1);
+  `cargo-audit 0.22.2` exit 0 (1294 advisories, 115 crates).
+- Discrepancies vs prompt: F-3 clippy failure absent here (lint behavior
+  differs on 1.99.0; fixing anyway per T1). F-1 count 124 vs local 119 =
+  platform-gated tests only (`#[cfg(unix)]` at cli.rs:222,624 +
+  security.rs:282,302 + vault.rs:1592 → +5 on Linux; 119+5=124 ✓).
+  F-5/F-6/F-7 confirmed as-is (no dependabot.yml, no scripts/, draft flag
+  missing, checksum globs `./*`, mutable action tags, no top-level
+  permissions). macos-13 label present (U-1/U-2 open).
+
+## Context summary (≤10 lines, read-first pass)
+
+- v0.2.1+Phase1 tree: v3 VMK envelope + manifest MAC, snapshots/backups as
+  complete containers, recovery wraps, scoped run, lockdown, typed records.
+- Surprise 1: F-3's clippy failure does not reproduce on stable 1.99.0.
+- Surprise 2: test-count gap (124 vs 119) is exactly the unix-gated tests.
+- Surprise 3: release.yml lacks `draft:true` although PROGRESS claimed it.
+- Surprise 4: checksum job globs `./*` (includes SHA256SUMS.txt itself).
+- CI check matrix already covers ubuntu+windows+macos (U-6 evidence source).
+
 ## 2026-10-05 — session start (v0.3.0 Phase 1)
 
 - Base verified: `8330f85` (v0.2.1), clean tree, branch `v030-phase1`

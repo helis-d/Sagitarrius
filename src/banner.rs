@@ -91,8 +91,17 @@ mod tests {
 
     #[test]
     fn logo_is_pure_ascii() {
-        assert!(!LOGO_ART.is_empty());
-        assert!(LOGO_ART.is_ascii(), "banner must stay CMD-safe pure ASCII");
+        // Read through a local binding: the content is what matters here,
+        // not const-evaluability (a direct `!LOGO_ART.is_empty()` is
+        // compile-time-known and guards nothing).
+        let art: &str = LOGO_ART;
+        assert!(!art.is_empty(), "logo art must not be empty");
+        assert!(art.is_ascii(), "banner must stay CMD-safe pure ASCII");
+        // The documented raster language: `#` = S strokes, `=` = ring,
+        // `@` = core. If the logo is ever replaced, update this too.
+        assert!(art.contains('#'), "logo lost its S strokes");
+        assert!(art.contains('='), "logo lost its ring");
+        assert!(art.contains('@'), "logo lost its core");
     }
 
     #[test]
