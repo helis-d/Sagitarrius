@@ -1,5 +1,33 @@
 # PROGRESS.md — session evidence log
 
+## T6 - DONE - 2026-10-07
+- Change (`24d378a`): version 0.3.0; Cargo.lock minimal (only `version=4`
+  header + sagitarrius line — the v3→v4 header rewrite is cargo's own doing
+  on this toolchain, parseable since 1.78, MSRV unaffected); CHANGELOG 0.3.0
+  section grouped by behavior incl. all mandated breaking items;
+  downgrade documented in CHANGELOG + vault-and-crypto.md; stale strings
+  swept (only true hits left).
+- U-4 compatibility matrix from real runs (0.2.1 release binary built from
+  worktree @8330f85): 0.2.1 vault → 0.3.0 opens + first write adds MAC;
+  0.3.0 MAC vault → 0.2.1 reads fine (serde ignores the field); 0.2.1
+  write silently drops the MAC (0.3.0 then refuses as stripped until
+  explicit restore). Back-up-before-upgrade documented.
+- Evidence: `cargo build --locked` ok; `cargo test --locked -j 2` 119/119.
+- Discrepancies: none. Open questions: none.
+
+## T7 - DONE - 2026-10-07
+- Change (`24d378a`): keywords (5), categories, homepage, documentation in
+  Cargo.toml; rust-version stays 1.85.
+- Evidence: `cargo package --locked --list --allow-dirty` (75 files, no
+  target/, no secrets; largest asset 150 KiB banner); `cargo publish
+  --dry-run --locked --allow-dirty` → "Packaged 75 files, 586.9KiB
+  (228.6KiB compressed)", verify-compile ok, "aborting upload due to dry
+  run". No exclude list needed.
+- Name report (crates.io API, read-only): `sagitarrius` does NOT exist
+  (available; nothing reserved); near-collision `sagittarius 0.3.1` exists
+  (different spelling) — user-confusion risk noted, no action possible.
+- Discrepancies: none. Open questions: none.
+
 ## T5 - DONE - 2026-10-07
 - Content was merged to main earlier; this task verified + adjusted it:
 - Content was merged to main earlier; this task verified + adjusted it:
