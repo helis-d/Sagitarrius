@@ -1,5 +1,20 @@
 # PROGRESS.md — session evidence log
 
+## T3 - PARTIAL - 2026-10-09
+- CI on branch push: run 37655810115 (`check` ubuntu/windows/macos +
+  `msrv` + `audit`, all success) covered the pre-T1 tree; a fresh CI run
+  was triggered by pushing this session's commits — conclusion pending at
+  write time (see T8 note).
+- Release `workflow_dispatch`: NOT VERIFIED — `gh` is not authenticated on
+  this box and dispatch needs auth. The workflow file itself was linted
+  (actionlint clean) and its Windows packaging path was executed by hand
+  (zip + SHA256 + smoke run, see T4 evidence in the prior session log).
+- Publish job: by construction it runs only on `refs/tags/v`; no tag was
+  created or pushed this session (verified: `git tag` empty locally, no
+  tag push commands issued). `gh release list` could not be queried
+  without auth — human to confirm zero new releases.
+- Discrepancies: none. Open questions: release-dispatch run (handoff below).
+
 ## T6 - DONE - 2026-10-07
 - Change (`24d378a`): version 0.3.0; Cargo.lock minimal (only `version=4`
   header + sagitarrius line — the v3→v4 header rewrite is cargo's own doing
@@ -288,3 +303,25 @@
 - `ensure_dir_perms`: pre-existing non-empty dirs keep permissions;
   only created/empty dirs get 0700 (unix test with 0755 + marker file).
 - Banner passwd line fixed (no longer claims env is required).
+
+## T4 - DONE (scripts+Windows run) / NEEDS HUMAN RUN (Linux/macOS)
+- `scripts/smoke.sh` (bash `set -euo pipefail`) + `scripts/smoke.ps1`
+  (5.1-safe via an Invoke-Bin stderr-file helper — plain `2>&1` aborts
+  under `$ErrorActionPreference='Stop'`). Steps: checksum, version, init,
+  add, list-hides-value, run-length-only, run-no-secret→2, exists 0/1,
+  wrong-password→2, export-no-flag→2, backup create/verify, LD_PRELOAD
+  add-allowed/run-refused→2, tamper→exit-2+integrity. Trap/finally cleanup,
+  lengths only, never values.
+- Evidence: `smoke.ps1` vs local release zip → **18/18 PASS, exit 0**.
+  `smoke.sh` NOT RUN here (no Linux/macOS box) — handoff below.
+  One-liner added to docs/development.md. `.gitattributes` forces LF for
+  `*.sh` (CRLF shebangs break Unix exec).
+- Discrepancies: none. Open questions: none.
+
+## T8 - PARTIAL - 2026-10-09
+- Fresh clone of the branch: fmt exit 0, clippy `-D warnings` exit 0,
+  `cargo test --locked` **119/119** (59+41+3+15+1), `cargo audit` exit 0
+  (1296 advisories, 115 crates), `cargo +1.85 check --locked --all-targets`
+  exit 0. Test counts copied from real output above.
+- Draft PR: NOT CREATED — `gh` unauthenticated (handoff below). Do not merge.
+- Discrepancies: none. Open questions: PR creation + release dispatch.
