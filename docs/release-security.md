@@ -12,3 +12,8 @@ exist, do NOT claim that a downloaded binary "is really from us":
 
 Current state: none of the above is configured. Distribute binaries only
 through channels you control, and verify checksums out-of-band.
+
+Note: `.github/workflows/release.yml` already builds per-platform archives
+and a SHA256SUMS artifact on every run (including `workflow_dispatch` dry
+runs), but nothing has been published to GitHub Releases yet, so the
+"published checksums" box above stays unchecked until a real release.

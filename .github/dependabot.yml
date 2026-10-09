@@ -1,0 +1,18 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # No auto-merge: pinned SHAs are reviewed by a human (see DECISIONS.md).
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # No auto-merge: MSRV (rust-version 1.85) is re-verified per update.

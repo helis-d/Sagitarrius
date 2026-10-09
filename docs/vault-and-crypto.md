@@ -3,6 +3,11 @@
 > v3 (current) uses a VMK envelope + per-record keys. v2 files
 > (whole-payload AES-GCM) still open; `migrate` upgrades them. Full design:
 > [architecture.md](architecture.md).
+>
+> Version notes: 0.3.0 adds the manifest MAC (additive header field) and
+> upgrades MAC-less v3 vaults on first write. Downgrade reads with 0.2.1
+> work, but a 0.2.1 write drops the MAC — 0.3.0 then refuses the file as
+> stripped until an explicit restore. Back up before upgrading.
 
 ## Vault location
 

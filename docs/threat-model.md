@@ -12,7 +12,8 @@
 5. **Vault corruption** — hash manifests + full-unlock verification detect it;
    restore from snapshot/backup recovers.
 6. **Replay of an older vault** — generation counter + trusted `state.json`
-   refuse stale files (see limitation below).
+   refuse stale files, but ONLY while that state file exists and is not
+   itself attacker-writable (see limitation 5 below).
 7. **Accidental deletion** — pre-restore snapshots; `remove` confirms.
 8. **Ransomware-like modification of accessible storage** — detected
    (integrity/generation signals), recovery via verified snapshots and

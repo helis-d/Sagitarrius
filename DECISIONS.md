@@ -68,3 +68,14 @@ F1's inline spec mandates HMAC-SHA256. `hmac 0.12` was already in
 Cargo.lock (transitive via `hkdf`); promoting it to a direct dependency is
 the only sane implementation — no hand-rolled MAC. Recorded here instead
 of spending the session's single escalation.
+
+## D07 — build provenance attestation (PROPOSAL ONLY, needs human approval)
+
+Not implemented. Proposed diff for `.github/workflows/release.yml` when
+approved: add `actions/attest-build-provenance` step after packaging in
+the `build` job (subject = the archive), with job-level
+`permissions: { id-token: write, attestations: write, contents: read }`.
+Rejected alternative: doing it silently now — it changes the release
+trust story (keyless Sigstore identity tied to this repo) and needs a
+human to understand what attestation does and does not prove. No code
+changed for this item.

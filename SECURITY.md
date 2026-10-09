@@ -5,9 +5,16 @@ protects against and what it does not.
 
 ## Reporting a vulnerability
 
-Please open a private security advisory on the project's GitHub repository,
-or email the maintainers directly. Do not open a public issue for
-vulnerabilities that could affect users.
+Please use GitHub Private Vulnerability Reporting on the project's
+repository (Security tab → Report a vulnerability). Do not open a public
+issue for vulnerabilities that could affect users.
+
+If private reporting is unavailable to you, contact: `SECURITY_CONTACT_TODO`
+(the maintainer will replace this placeholder with a real address; until
+then use private reporting only).
+
+Human action: enable Settings → Security → Private vulnerability reporting
+on the repository.
 
 ## Threat model
 
@@ -20,9 +27,10 @@ Full statement: [docs/threat-model.md](docs/threat-model.md).
 - Loss or theft of a disk, backup, or synced copy of `vault.json`.
 - Silent tampering with the vault file, snapshots, backups, or file
   containers (all authenticated; failures are closed, never partial).
-- Replay of an older-but-authentic vault (generation counter + trusted
-  state refuse stale files; v2 files report rollback protection
-  as unavailable).
+- Replay of an older-but-authentic vault — refused by the generation
+  counter compared against trusted `state.json`, but ONLY while that state
+  file exists and is not itself attacker-writable (see out-of-scope item
+  below); v2 files report rollback protection as unavailable.
 - Ransomware-like modification of accessible storage: detected via
   integrity/generation signals; recovery via verified snapshots and
   *offline* backups. Same-disk copies are history, not protection.
@@ -145,6 +153,49 @@ stale lock on some filesystems, in which case rerun the command.
 - Vault from a future version: `unsupported vault version: N`.
 - Missing vault: `Sagitarrius has not been initialized. Run: sagitarrius init`.
 - The binary never panics on attacker-controlled input in normal operation.
+
+## What is zeroized
+
+Best-effort memory hygiene, not a guarantee (see next section):
+
+- Derived keys and the VMK wipe on drop (`ZeroizeOnDrop` on `DerivedKey`
+  in `src/crypto.rs` and `VaultMasterKey` in `src/envelope.rs`).
+- Master-password `String`s are wiped after use in every command
+  (`password.zeroize()` on both success and unlock-failure paths).
+- Decrypted plaintext buffers are wiped after encrypt/decrypt in the
+  vault layer; `run` wipes its name/value copies after `Command::env`.
+- Recovery codes and temp secret pairs are wiped after use.
+
+## Hardening not implemented
+
+- The Argon2id memory blocks (64 MiB per derivation) are NOT wiped: the
+  `argon2` crate's `zeroize` feature is not enabled in our build
+  (verified: `cargo tree -e features -i argon2` lists only
+  alloc/default/password-hash/rand), and even with it only small
+  intermediaries are wiped, never the block memory itself.
+- No page locking (`mlock`/`VirtualLock`), no swap avoidance, no
+  core-dump suppression anywhere in the codebase.
+- Allocator copies, `serde` intermediate `String`s, and the child
+  process environment are outside wiping.
+- Treat unlocked plaintext as recoverable by anyone who can read process
+  memory, swap, or crash dumps on the machine.
+
+## Independent review wanted
+
+No independent cryptographic review has been performed. If you can review
+applied Rust cryptography (AEAD usage, KDF parameterization, envelope
+key hierarchy, backup/restore integrity logic), please report findings via
+private vulnerability reporting above. Honest, specific findings are
+welcome; vague assurances are not.
+
+## Recommendations
+
+- Use a long passphrase (12+ characters enforced for new passwords).
+- Keep offline backups (`backup create --to <offline-dir>`) and verify
+  them (`backup verify`).
+- Rotate secrets after any suspected compromise of the machine.
+- Do not store your most critical secrets here until an independent
+  review exists.
 
 ## What we do not claim
 

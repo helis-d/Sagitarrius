@@ -1,5 +1,135 @@
 # PROGRESS.md — session evidence log
 
+## T3 - DONE (CI) / NOT VERIFIED (release dispatch) - 2026-10-09
+- CI run https://github.com/helis-d/Sagitarrius/actions/runs/37956127177
+  (head 31824dd, i.e. this branch tip): completed success — jobs msrv,
+  check (macos-latest), check (windows-latest), check (ubuntu-latest),
+  audit, ALL success. This is the Windows/macOS evidence (U-6): the
+  `check` matrix runs the full suite on both.
+- Release `workflow_dispatch`: NOT VERIFIED — `gh` is not authenticated on
+  this box and dispatch needs auth. The workflow file itself was linted
+  (actionlint clean) and its Windows packaging path was executed by hand
+  (zip + SHA256 + smoke run, see T4 evidence in the prior session log).
+- Publish job: by construction it runs only on `refs/tags/v`; no tag was
+  created or pushed this session (verified: `git tag` empty locally, no
+  tag push commands issued). `gh release list` could not be queried
+  without auth — human to confirm zero new releases.
+- Discrepancies: none. Open questions: release-dispatch run (handoff below).
+
+## T6 - DONE - 2026-10-07
+- Change (`24d378a`): version 0.3.0; Cargo.lock minimal (only `version=4`
+  header + sagitarrius line — the v3→v4 header rewrite is cargo's own doing
+  on this toolchain, parseable since 1.78, MSRV unaffected); CHANGELOG 0.3.0
+  section grouped by behavior incl. all mandated breaking items;
+  downgrade documented in CHANGELOG + vault-and-crypto.md; stale strings
+  swept (only true hits left).
+- U-4 compatibility matrix from real runs (0.2.1 release binary built from
+  worktree @8330f85): 0.2.1 vault → 0.3.0 opens + first write adds MAC;
+  0.3.0 MAC vault → 0.2.1 reads fine (serde ignores the field); 0.2.1
+  write silently drops the MAC (0.3.0 then refuses as stripped until
+  explicit restore). Back-up-before-upgrade documented.
+- Evidence: `cargo build --locked` ok; `cargo test --locked -j 2` 119/119.
+- Discrepancies: none. Open questions: none.
+
+## T7 - DONE - 2026-10-07
+- Change (`24d378a`): keywords (5), categories, homepage, documentation in
+  Cargo.toml; rust-version stays 1.85.
+- Evidence: `cargo package --locked --list --allow-dirty` (75 files, no
+  target/, no secrets; largest asset 150 KiB banner); `cargo publish
+  --dry-run --locked --allow-dirty` → "Packaged 75 files, 586.9KiB
+  (228.6KiB compressed)", verify-compile ok, "aborting upload due to dry
+  run". No exclude list needed.
+- Name report (crates.io API, read-only): `sagitarrius` does NOT exist
+  (available; nothing reserved); near-collision `sagittarius 0.3.1` exists
+  (different spelling) — user-confusion risk noted, no action possible.
+- Discrepancies: none. Open questions: none.
+
+## T5 - DONE - 2026-10-07
+- Content was merged to main earlier; this task verified + adjusted it:
+- Content was merged to main earlier; this task verified + adjusted it:
+  reporting = GitHub Private Vulnerability Reporting + literal
+  `SECURITY_CONTACT_TODO` (SECURITY.md:6-16); replay claim now states the
+  precondition inline (SECURITY.md:23-25, threat-model.md:14-16) with the
+  both-files-replaced case in out-of-scope (SECURITY.md:44-45,
+  threat-model.md:34-35); zeroization/hardening/review/recommendations
+  sections present (SECURITY.md:157-196); release-security.md notes
+  artifacts exist per-run but nothing published.
+- Traceability (U-5 resolved): `cargo tree -e features -i argon2` shows
+  alloc/default/password-hash/rand — NO `zeroize` feature, and even with
+  it only small intermediaries (argon2-0.5.3 lib.rs:322-323,501-504)
+  are wiped, never the 64 MiB block memory. Zeroized: DerivedKey +
+  ZeroizeOnDrop (crypto.rs:44-45), VaultMasterKey (envelope.rs:33-34),
+  password Strings on all paths, plaintext buffers post-crypto,
+  run name/value copies, recovery codes. mlock/VirtualLock/core-dump:
+  zero hits repo-wide. No superlatives in either file.
+- Human action: enable Settings -> Security -> Private vulnerability
+  reporting. No response-time statement added (no approval).
+- Discrepancies: F-9's "missing qualification" was already fixed on main;
+  only the inline precondition needed tightening.
+- Open questions: none.
+
+## T2 - DONE - 2026-10-07
+- Changes (`8e90580`, `dba364c`): ci.yml gets top-level
+  `permissions: contents: read`, `concurrency` cancel-in-progress,
+  `--locked` on clippy/test; release.yml gets `macos-13` →
+  `macos-15-intel`, `draft: true` + `fail_on_unmatched_files: true`,
+  checksums via `cd dist && sha256sum -- *.tar.gz *.zip` (self-excluding),
+  top-level read permissions; new `.github/dependabot.yml` (actions+cargo
+  weekly, grouped minor/patch, no auto-merge).
+- Action SHAs resolved live, not invented: checkout v4
+  `11d5960a…`, upload-artifact v4 `ea165f8d…`, download-artifact v4
+  `d3f86a10…` (all `refs/tags/v4`, no `^{}` = lightweight tags, SHA IS the
+  commit); dtolnay has no version tags → pinned master HEAD `7e38f4b4…`
+  with `toolchain: stable`/`1.85` inputs preserving selection semantics;
+  softprops v2 `3bb12739…` (lightweight). Version comments on every use.
+- Runner labels: macos-13 retired (deprecation from Sep 2025 per
+  actions/runner-images#13045); Intel successor is `macos-15-intel`
+  (macOS 15, until Aug 2027); macos-14 itself retires 2026-11-02 with
+  October brownouts (changelog 2026-10-01) but we never used it.
+  aarch64-linux stays omitted (documented, needs cross toolchain).
+- Evidence: `actionlint 1.7.12` on both files → exit 0, no findings.
+- Discrepancies: none vs F-5 (all confirmed pre-change).
+- Open questions: attestation proposal left for DECISIONS (escalation item).
+
+## T1 - DONE - 2026-10-07
+- Change: `src/banner.rs` `logo_is_pure_ascii` — vacuous `!LOGO_ART.is_empty()`
+  replaced with content guards (`#`/`=`/`@` raster language) via a local
+  binding (no `#[allow]`).
+- Evidence: `cargo fmt --check` exit 0; `cargo clippy --locked
+  --all-targets --all-features -- -D warnings` exit 0 (rustc 1.99.0);
+  banner tests 2/2 pass.
+- Discrepancies: F-3's clippy failure does not reproduce on this toolchain
+  (fixed anyway — the new assertions are strictly stronger).
+- Open questions: none.
+
+## T0 baseline — release/v0.3.0-blockers from main@7b6a5b7 (2026-10-07)
+
+- Env: rustc/cargo 1.99.0 stable (active, `rustup update stable` = unchanged),
+  Windows x64, gh 2.97.0 present but NOT authenticated, actionlint absent.
+  Branch `release/v0.3.0-blockers` created from `origin/main`; tree was
+  line-ending noise only (reverted, nothing lost).
+- Gates: `fmt --check` PASS; `clippy --locked --all-targets --all-features
+  -- -D warnings` PASS (F-3 does NOT reproduce on 1.99.0 — see discrepancy);
+  `cargo test --locked -j 2` **119/119** (59+41+3+15+1);
+  `cargo-audit 0.22.2` exit 0 (1294 advisories, 115 crates).
+- Discrepancies vs prompt: F-3 clippy failure absent here (lint behavior
+  differs on 1.99.0; fixing anyway per T1). F-1 count 124 vs local 119 =
+  platform-gated tests only (`#[cfg(unix)]` at cli.rs:222,624 +
+  security.rs:282,302 + vault.rs:1592 → +5 on Linux; 119+5=124 ✓).
+  F-5/F-6/F-7 confirmed as-is (no dependabot.yml, no scripts/, draft flag
+  missing, checksum globs `./*`, mutable action tags, no top-level
+  permissions). macos-13 label present (U-1/U-2 open).
+
+## Context summary (≤10 lines, read-first pass)
+
+- v0.2.1+Phase1 tree: v3 VMK envelope + manifest MAC, snapshots/backups as
+  complete containers, recovery wraps, scoped run, lockdown, typed records.
+- Surprise 1: F-3's clippy failure does not reproduce on stable 1.99.0.
+- Surprise 2: test-count gap (124 vs 119) is exactly the unix-gated tests.
+- Surprise 3: release.yml lacks `draft:true` although PROGRESS claimed it.
+- Surprise 4: checksum job globs `./*` (includes SHA256SUMS.txt itself).
+- CI check matrix already covers ubuntu+windows+macos (U-6 evidence source).
+
 ## 2026-10-05 — session start (v0.3.0 Phase 1)
 
 - Base verified: `8330f85` (v0.2.1), clean tree, branch `v030-phase1`
@@ -174,3 +304,25 @@
 - `ensure_dir_perms`: pre-existing non-empty dirs keep permissions;
   only created/empty dirs get 0700 (unix test with 0755 + marker file).
 - Banner passwd line fixed (no longer claims env is required).
+
+## T4 - DONE (scripts+Windows run) / NEEDS HUMAN RUN (Linux/macOS)
+- `scripts/smoke.sh` (bash `set -euo pipefail`) + `scripts/smoke.ps1`
+  (5.1-safe via an Invoke-Bin stderr-file helper — plain `2>&1` aborts
+  under `$ErrorActionPreference='Stop'`). Steps: checksum, version, init,
+  add, list-hides-value, run-length-only, run-no-secret→2, exists 0/1,
+  wrong-password→2, export-no-flag→2, backup create/verify, LD_PRELOAD
+  add-allowed/run-refused→2, tamper→exit-2+integrity. Trap/finally cleanup,
+  lengths only, never values.
+- Evidence: `smoke.ps1` vs local release zip → **18/18 PASS, exit 0**.
+  `smoke.sh` NOT RUN here (no Linux/macOS box) — handoff below.
+  One-liner added to docs/development.md. `.gitattributes` forces LF for
+  `*.sh` (CRLF shebangs break Unix exec).
+- Discrepancies: none. Open questions: none.
+
+## T8 - PARTIAL - 2026-10-09
+- Fresh clone of the branch: fmt exit 0, clippy `-D warnings` exit 0,
+  `cargo test --locked` **119/119** (59+41+3+15+1), `cargo audit` exit 0
+  (1296 advisories, 115 crates), `cargo +1.85 check --locked --all-targets`
+  exit 0. Test counts copied from real output above.
+- Draft PR: NOT CREATED — `gh` unauthenticated (handoff below). Do not merge.
+- Discrepancies: none. Open questions: PR creation + release dispatch.
