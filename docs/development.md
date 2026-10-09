@@ -8,7 +8,8 @@ cargo fmt --check
 ```
 
 Run all four before opening a pull request. Bug reports and small, focused
-pull requests are welcome.
+pull requests are welcome. Release smoke tests live in `scripts/`
+(`smoke.sh` for POSIX, `smoke.ps1` for Windows) — see their headers.
 
 ## Project layout
 
