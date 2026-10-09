@@ -1,10 +1,11 @@
 # PROGRESS.md — session evidence log
 
-## T3 - PARTIAL - 2026-10-09
-- CI on branch push: run 37655810115 (`check` ubuntu/windows/macos +
-  `msrv` + `audit`, all success) covered the pre-T1 tree; a fresh CI run
-  was triggered by pushing this session's commits — conclusion pending at
-  write time (see T8 note).
+## T3 - DONE (CI) / NOT VERIFIED (release dispatch) - 2026-10-09
+- CI run https://github.com/helis-d/Sagitarrius/actions/runs/37956127177
+  (head 31824dd, i.e. this branch tip): completed success — jobs msrv,
+  check (macos-latest), check (windows-latest), check (ubuntu-latest),
+  audit, ALL success. This is the Windows/macOS evidence (U-6): the
+  `check` matrix runs the full suite on both.
 - Release `workflow_dispatch`: NOT VERIFIED — `gh` is not authenticated on
   this box and dispatch needs auth. The workflow file itself was linted
   (actionlint clean) and its Windows packaging path was executed by hand
