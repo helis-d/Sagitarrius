@@ -54,7 +54,7 @@ shows no ureq/url/hyper/reqwest).
 - [x] Phase H: `tests/broker.rs` — 23 integration tests covering 17 security scenarios
 - [x] Phase I: remaining docs (`product-vision`, `threat-model`, `mvp-spec`, `testing-strategy`, `roadmap`)
 - [x] Phase J: commit all broker code
-- [ ] Remediation: pinned DNS/SSRF enforcement, constrained response schema, genuine broker-process tests, tightened policy/request/audit semantics, JSON deviation record, policy-trust-boundary decision, broker CI coverage, MSRV-compatible dependency pins
+- [x] Remediation: pinned DNS/SSRF enforcement, constrained response schema, genuine broker-process tests, tightened policy/request/audit semantics, JSON deviation record, policy-trust-boundary decision, broker CI coverage, MSRV-compatible dependency pins (policy-trust approval still needs-human)
 
 ### Acceptance criteria
 
