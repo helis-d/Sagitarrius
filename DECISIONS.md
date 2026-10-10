@@ -18,6 +18,23 @@ async stacks), standing broker tokens in v1 (per-call password instead).
 Conventions: each entry has status (`decided` | `needs-human`), the
 decision, and why. Security-sensitive choices reference the mechanism.
 
+## PS-02 — broker remediation approvals (needs-human)
+
+Single batched escalation for the PS-01 remediation:
+
+1. Keep the implemented JSON policy format and treat the earlier TOML
+   reference as superseded? The code, tests, and MVP specification now use
+   JSON. Recommended: yes; TOML would add a dependency and churn without a
+   security benefit.
+2. Approve the trusted-launcher policy contract in
+   `docs/privacy-station/policy-trust-boundary.md`? Direct invocation by an
+   untrusted agent remains unsupported because same-user operator and agent
+   processes cannot be distinguished inside the broker. Recommended: yes, or
+   approve a follow-up command-surface/signature design.
+
+Until both are approved, PS-01 format conformance and agent-controlled
+policy selection are marked unresolved, not production-ready.
+
 ## D01 — F1: names stay plaintext (decided)
 
 Record names remain plaintext metadata. Encrypting them would force a full

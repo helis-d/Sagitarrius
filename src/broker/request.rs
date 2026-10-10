@@ -3,8 +3,8 @@
 //! The agent supplies this JSON. Every field is untrusted data: the grant id
 //! selects exactly one policy entry, and everything else must match it
 //! literally. Notably there is NO headers/body freedom: v1 requests carry
-//! no headers at all (policy-fixed headers are always sent) and an optional
-//! body only when the grant allows it.
+//! no headers at all (policy-fixed headers are always sent) and no body.
+//! Query strings, fragments, and embedded credentials are rejected.
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 /// the window bounds abuse, it does not prevent in-window replay of an
 /// idempotent test call.
 pub const TIMESTAMP_SKEW_SECS: u64 = 300;
+
+/// Maximum request-file size. Callers should enforce this before reading an
+/// entire file into memory; the parser rechecks it defensively.
+pub const MAX_REQUEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,12 +26,10 @@ pub struct BrokerRequest {
     pub url: String,
     pub timestamp: u64,
     pub nonce: String,
-    #[serde(default)]
-    pub body: Option<String>,
 }
 
 pub fn parse_request(bytes: &[u8], now_secs: u64) -> Result<BrokerRequest, String> {
-    if bytes.len() > 64 * 1024 {
+    if bytes.len() > MAX_REQUEST_BYTES {
         return Err("request too large (max 64 KiB)".to_string());
     }
     let req: BrokerRequest =
@@ -35,12 +37,13 @@ pub fn parse_request(bytes: &[u8], now_secs: u64) -> Result<BrokerRequest, Strin
     if req.grant.is_empty() || req.credential.is_empty() {
         return Err("request grant/credential must not be empty".to_string());
     }
-    if req.method.is_empty() || req.method.len() > 16 {
+    if req.method != "GET" && req.method != "POST" {
         return Err("request method invalid".to_string());
     }
     if req.url.is_empty() || req.url.len() > 4096 {
         return Err("request url invalid".to_string());
     }
+    validate_request_url_shape(&req.url)?;
     if req.nonce.is_empty() || req.nonce.len() > 256 {
         return Err("request nonce invalid".to_string());
     }
@@ -50,12 +53,36 @@ pub fn parse_request(bytes: &[u8], now_secs: u64) -> Result<BrokerRequest, Strin
             "request timestamp outside ±{TIMESTAMP_SKEW_SECS}s window"
         ));
     }
-    if let Some(body) = &req.body {
-        if body.len() > 1024 * 1024 {
-            return Err("request body too large".to_string());
-        }
-    }
     Ok(req)
+}
+
+/// Syntactic URL screen without the `url` crate (which is broker-HTTP-only).
+/// Full parsing and canonicalization happen again immediately before
+/// authorization and sending.
+fn validate_request_url_shape(url: &str) -> Result<(), String> {
+    let rest = if let Some(rest) = url.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("https://") {
+        rest
+    } else if url.to_ascii_lowercase().starts_with("http://")
+        || url.to_ascii_lowercase().starts_with("https://")
+    {
+        return Err("request url scheme must be lowercase http or https".to_string());
+    } else {
+        return Err("request url scheme must be http or https".to_string());
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, target) = rest.split_at(authority_end);
+    if authority.is_empty() || authority.contains('@') {
+        return Err("request url authority invalid".to_string());
+    }
+    if target.contains('#') {
+        return Err("request url fragments are forbidden".to_string());
+    }
+    if target.contains('?') {
+        return Err("request url queries are forbidden".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -77,7 +104,6 @@ mod tests {
     fn happy_path_parses() {
         let r = parse_request(base_req().to_string().as_bytes(), 1_700_000_000).unwrap();
         assert_eq!(r.grant, "g1");
-        assert!(r.body.is_none());
     }
 
     #[test]
@@ -108,10 +134,28 @@ mod tests {
         let mut v = base_req();
         v["timestamp"] = serde_json::json!(1_700_000_000u64 + 301);
         assert!(parse_request(v.to_string().as_bytes(), now).is_err());
-        // Oversized request + body.
-        assert!(parse_request(&vec![b'x'; 70 * 1024], now).is_err());
+        // Request bodies are disabled: the field itself is unknown.
         let mut v = base_req();
-        v["body"] = serde_json::Value::String("x".repeat(2 * 1024 * 1024));
+        v["body"] = serde_json::Value::String("x".to_string());
         assert!(parse_request(v.to_string().as_bytes(), now).is_err());
+        // Queries, fragments, credentials, and unsupported methods fail here.
+        for url in [
+            "https://127.0.0.1:1/v1/echo?debug=1",
+            "https://127.0.0.1:1/v1/echo#section",
+            "https://user:pass@127.0.0.1:1/v1/echo",
+            "gopher://127.0.0.1:1/v1/echo",
+        ] {
+            let mut v = base_req();
+            v["url"] = serde_json::Value::String(url.to_string());
+            assert!(
+                parse_request(v.to_string().as_bytes(), now).is_err(),
+                "{url} must be rejected"
+            );
+        }
+        let mut v = base_req();
+        v["method"] = serde_json::Value::String("DELETE".to_string());
+        assert!(parse_request(v.to_string().as_bytes(), now).is_err());
+        // Oversized request.
+        assert!(parse_request(&vec![b'x'; 70 * 1024], now).is_err());
     }
 }

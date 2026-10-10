@@ -52,8 +52,9 @@ shows no ureq/url/hyper/reqwest).
 - [x] Phase G: `src/broker/main.rs` — CLI wiring, password-on-stdin, vault unlock,
   credential resolution, bounded read, audit-before-output
 - [x] Phase H: `tests/broker.rs` — 23 integration tests covering 17 security scenarios
-- [ ] Phase I: remaining docs (`product-vision`, `threat-model`, `mvp-spec`, `testing-strategy`, `roadmap`)
-- [ ] Phase J: commit all broker code
+- [x] Phase I: remaining docs (`product-vision`, `threat-model`, `mvp-spec`, `testing-strategy`, `roadmap`)
+- [x] Phase J: commit all broker code
+- [ ] Remediation: pinned DNS/SSRF enforcement, constrained response schema, genuine broker-process tests, tightened policy/request/audit semantics, JSON deviation record, policy-trust-boundary decision, broker CI coverage, MSRV-compatible dependency pins
 
 ### Acceptance criteria
 
@@ -61,8 +62,9 @@ shows no ureq/url/hyper/reqwest).
 - [x] `cargo clippy --locked --all-targets --all-features -- -D warnings` passes
 - [x] `cargo test --locked` passes (70 + 41 + 15 + 23 + 3 + 1 = 153 tests)
 - [x] Main binary has no HTTP deps in tree
-- [ ] All docs written
-- [ ] Committed
+- [x] All docs written
+- [x] Committed
+- [ ] Remediation acceptance report in `PROGRESS.md` (including unresolved policy-trust boundary)
 
 ## Phase 2 — Core value features
 
