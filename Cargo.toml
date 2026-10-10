@@ -33,7 +33,7 @@ broker-http = ["dep:ureq", "dep:url"]
 [dependencies]
 aes-gcm = "0.10"
 argon2 = "0.5"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4", features = ["derive"] }
 directories = "5"
 fs2 = "0.4"
