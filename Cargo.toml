@@ -16,6 +16,20 @@ categories = ["command-line-utilities", "cryptography"]
 name = "sagitarrius"
 path = "src/main.rs"
 
+# Second binary (Privacy Station broker). Built only with --features
+# broker-http or --all-features; the main binary never links HTTP code.
+[[bin]]
+name = "sagitarrius-broker"
+path = "src/broker/main.rs"
+required-features = ["broker-http"]
+
+[features]
+# HTTP egress for the broker binary ONLY. Enabling this feature does not
+# give the main `sagitarrius` binary any network capability (see
+# `required-features` above; verify with
+# `cargo tree -e normal --bin sagitarrius`).
+broker-http = ["dep:ureq", "dep:url"]
+
 [dependencies]
 aes-gcm = "0.10"
 argon2 = "0.5"
@@ -31,6 +45,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
+# Broker-only HTTP (PS-01 approved): never used by the main binary.
+# ureq = minimal blocking client (rustls TLS); url = strict URL parsing.
+ureq = { version = "3", optional = true }
+url = { version = "2", optional = true }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

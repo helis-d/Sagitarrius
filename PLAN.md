@@ -34,6 +34,36 @@ minimal fix, evidence in PROGRESS.md.
 Exit: gates green, every finding tested, 93 existing tests unregressed,
 v0.2.1-fixture migration test.
 
+## Privacy Station — PS-01 credential broker (current)
+
+Branch: `privacy-station/proposal`. Separate `sagitarrius-broker` binary;
+main CLI stays network-free (verified: `cargo tree -e normal --bin sagitarrius`
+shows no ureq/url/hyper/reqwest).
+
+### Stage list
+
+- [x] Phase A: repo state, ureq 3.4.2 API verification, main-binary network-free proof
+- [x] Phase B: `src/broker/policy.rs` — pure default-deny matcher, JSON schema, 5 unit tests
+- [x] Phase C: `src/broker/request.rs` — strict schema, deny-unknown-fields, timestamp ±500s, 2 unit tests
+- [x] Phase D: `src/lib.rs` + `src/main.rs` split; `src/broker/mod.rs`; feature `broker-http`
+- [x] Phase E: `src/broker/http.rs` — `locked_agent()`, `validate_target()`, `redact_ureq_error()`, 6 unit tests
+- [x] Phase F: `src/broker/respond.rs` — allowlist filter + envelopes, 3 unit tests;
+  `src/broker/audit.rs` — redacted JSONL writer, fail-closed, 1 unit test
+- [x] Phase G: `src/broker/main.rs` — CLI wiring, password-on-stdin, vault unlock,
+  credential resolution, bounded read, audit-before-output
+- [x] Phase H: `tests/broker.rs` — 23 integration tests covering 17 security scenarios
+- [ ] Phase I: remaining docs (`product-vision`, `threat-model`, `mvp-spec`, `testing-strategy`, `roadmap`)
+- [ ] Phase J: commit all broker code
+
+### Acceptance criteria
+
+- [x] `cargo fmt --check` passes
+- [x] `cargo clippy --locked --all-targets --all-features -- -D warnings` passes
+- [x] `cargo test --locked` passes (70 + 41 + 15 + 23 + 3 + 1 = 153 tests)
+- [x] Main binary has no HTTP deps in tree
+- [ ] All docs written
+- [ ] Committed
+
 ## Phase 2 — Core value features
 
 Each designed in DECISIONS.md with 5 lines of example usage before coding:
