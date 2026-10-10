@@ -64,7 +64,7 @@ jobs:
           New-Item -ItemType Directory -Path $staging | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/sagitarrius.exe", "README.md", "LICENSE" -Destination $staging
           Compress-Archive -Path $staging -DestinationPath "$staging.zip"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.name }}.${{ matrix.archive }}
           path: ${{ matrix.name }}.${{ matrix.archive }}
@@ -80,7 +80,7 @@ jobs:
       # Explicit archive globs (never `*`): SHA256SUMS.txt must list exactly
       # the release archives — never itself — so `sha256sum -c` works.
       - run: cd dist && sha256sum -- *.tar.gz *.zip > SHA256SUMS.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: SHA256SUMS.txt
           path: dist/SHA256SUMS.txt
