@@ -1,5 +1,15 @@
 # PROGRESS.md — session evidence log
 
+## Privacy Station assessment (report-only session, 2026-10-09)
+- Read AGENTS/PLAN/PROGRESS/DECISIONS, README, CHANGELOG, SECURITY,
+  architecture, threat-model, security-testing, commands, vault-and-crypto,
+  development, cli.rs, src+tests layout; searched MCP 2026-07-28 auth spec
+  and OWASP LLM Top 10 2025.
+- Wrote `docs/privacy-station/architecture.md` (proposal, Option A
+  recommended) + `competitive-analysis.md`; recorded PS-01 escalation in
+  DECISIONS.md. No code changes; gates untouched (last green: 119/119 on
+  release/v0.3.0-blockers).
+
 ## T3 - DONE (CI) / NOT VERIFIED (release dispatch) - 2026-10-09
 - CI run https://github.com/helis-d/Sagitarrius/actions/runs/37956127177
   (head 31824dd, i.e. this branch tip): completed success — jobs msrv,

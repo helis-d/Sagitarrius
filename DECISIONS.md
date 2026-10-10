@@ -1,5 +1,20 @@
 # DECISIONS.md — Sagitarrius design record
 
+## PS-01 — Privacy Station broker architecture (needs-human)
+
+Single batched escalation for the Privacy Station MVP (details in
+`docs/privacy-station/architecture.md`, research in
+`docs/privacy-station/competitive-analysis.md`):
+1. Option A (separate `sagitarrius-broker` binary, main CLI stays
+   network-free)? Recommended: yes.
+2. New deps `ureq` + `url` for the broker binary only? Recommended: yes.
+3. New surfaces (broker CLI, policy TOML, request/response JSON, audit
+   JSONL)? Recommended: yes as specified.
+4. No vault-format change, no main-CLI changes — confirmation only.
+Rejected: Option B (two new auth boundaries for an MVP), Option C
+(breaks the no-network invariant for convenience), hyper/reqwest (heavier
+async stacks), standing broker tokens in v1 (per-call password instead).
+
 Conventions: each entry has status (`decided` | `needs-human`), the
 decision, and why. Security-sensitive choices reference the mechanism.
 
