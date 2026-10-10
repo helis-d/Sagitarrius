@@ -1,24 +1,9 @@
-mod archive;
-mod banner;
-mod cli;
-mod commands;
-mod crypto;
-mod envelope;
-mod error;
-mod files;
-mod input;
-mod platform;
-mod state;
-mod storage;
-mod vault;
-mod vault_v3;
-
 use clap::Parser;
-use cli::Cli;
+use sagitarrius::{banner, cli, commands, input};
 
 fn main() {
-    let cli = Cli::parse();
-    crate::input::configure(cli.password_stdin);
+    let cli = cli::Cli::parse();
+    input::configure(cli.password_stdin);
     let command = match cli.command {
         // Bare `sagitarrius` in CMD: show the logo + menu, touch nothing.
         None => {

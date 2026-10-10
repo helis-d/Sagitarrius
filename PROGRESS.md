@@ -1,5 +1,59 @@
 # PROGRESS.md — session evidence log
 
+## PS-01 MVP broker — DONE (2026-10-10)
+
+Commit `5ad2387` on `privacy-station/proposal`. 18 files, +2769/-27.
+
+### What was built
+- `sagitarrius-broker` binary (feature `broker-http`, deps: ureq 3.4.2 + url)
+- `src/broker/policy.rs` — default-deny JSON policy matcher (5 unit tests)
+- `src/broker/request.rs` — strict request schema, ±500s timestamp (2 unit tests)
+- `src/broker/http.rs` — SSRF filter, locked agent, redacted errors (6 unit tests)
+- `src/broker/respond.rs` — allowlist filter + envelopes (3 unit tests)
+- `src/broker/audit.rs` — redacted JSONL, fail-closed (1 unit tests)
+- `src/broker/main.rs` — CLI wiring, password-on-stdin, vault unlock
+- `tests/broker.rs` — 23 integration tests covering 17 security scenarios
+- `src/lib.rs` + `src/main.rs` split; main binary network-free (verified)
+
+### Gates (all green)
+- `cargo fmt --check` — PASS
+- `cargo clippy --locked --all-targets --all-features -- -D warnings` — PASS
+- `cargo test --locked` — 153 tests PASS (70 + 41 + 15 + 23 + 3 + 1)
+- `cargo tree -e normal --bin sagitarrius` — no ureq/url/hyper/reqwest
+
+### Docs written
+- `docs/privacy-station/architecture.md` (pre-existing)
+- `docs/privacy-station/competitive-analysis.md` (pre-existing)
+- `docs/privacy-station/product-vision.md`
+- `docs/privacy-station/threat-model.md`
+- `docs/privacy-station/mvp-spec.md`
+- `docs/privacy-station/testing-strategy.md`
+- `docs/privacy-station/roadmap.md`
+
+### Design decisions
+- JSON policy (not TOML) — avoids new dependency
+- Password on stdin (not env) — agent env vars must not unlock vault
+- Bearer-only v1 — no OAuth refresh in MVP
+- Loopback requires explicit `loopback: true` opt-in
+- Audit-write failure denies operation (fail closed)
+- DNS rebinding: resolve-then-check; race window documented
+
+### Known limitations (documented, not hidden)
+- No cross-call replay cache (timestamp window only)
+- DNS rebinding race window not guaranteed
+- No end-to-end tests with real TLS server yet
+- No MCP server mode (PS-05)
+
+## Privacy Station assessment (report-only session, 2026-10-09)
+- Read AGENTS/PLAN/PROGRESS/DECISIONS, README, CHANGELOG, SECURITY,
+  architecture, threat-model, security-testing, commands, vault-and-crypto,
+  development, cli.rs, src+tests layout; searched MCP 2026-07-28 auth spec
+  and OWASP LLM Top 10 2025.
+- Wrote `docs/privacy-station/architecture.md` (proposal, Option A
+  recommended) + `competitive-analysis.md`; recorded PS-01 escalation in
+  DECISIONS.md. No code changes; gates untouched (last green: 119/119 on
+  release/v0.3.0-blockers).
+
 ## T3 - DONE (CI) / NOT VERIFIED (release dispatch) - 2026-10-09
 - CI run https://github.com/helis-d/Sagitarrius/actions/runs/37956127177
   (head 31824dd, i.e. this branch tip): completed success — jobs msrv,
