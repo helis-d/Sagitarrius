@@ -105,7 +105,7 @@ impl RecordKind {
 /// Decrypted record payload. File payloads reference a chunked container on
 /// disk (see `files.rs`); the container holds the bytes, the record holds
 /// identity + integrity metadata.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Zeroize)]
 #[serde(rename_all = "lowercase")]
 pub enum RecordPayload {
     Secret {

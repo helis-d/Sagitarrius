@@ -28,6 +28,10 @@ printf '%s' "$MASTER_PW" | sagitarrius-broker call \
 
 ## Policy format (JSON)
 
+The implementation uses JSON. An earlier decision record mentioned TOML;
+that format was not implemented. See `DECISIONS.md` for the unresolved
+format-conformance question.
+
 ```json
 {
   "version": 1,
@@ -44,16 +48,29 @@ printf '%s' "$MASTER_PW" | sagitarrius-broker call \
       "max_body_bytes": 0,
       "max_response_bytes": 65536,
       "timeout_secs": 10,
-      "allow_response_fields": ["status", "data"],
+      "allow_response_fields": [
+        {"path": "status", "kind": "string", "max_len": 64},
+        {"path": "data.id", "kind": "integer"}
+      ],
       "loopback": false
     }
   ]
 }
 ```
 
-All fields except `headers`, `allow_body`, `max_body_bytes`,
-`max_response_bytes`, `timeout_secs`, and `loopback` are required.
-Unknown fields are rejected at load.
+- `methods` supports only `GET` and `POST`.
+- `hosts` are exact lowercase `host:port` values.
+- `paths` are segment scopes: `/v1` covers `/v1` and `/v1/status`, but not
+  `/v10/status`.
+- Policy headers must be visible ASCII and must not override broker- or
+  HTTP-controlled fields such as `Authorization`, `Host`, `Content-Length`,
+  `Transfer-Encoding`, `Connection`, proxy headers, or upgrade headers.
+- Request bodies are disabled: `allow_body` must be `false` and
+  `max_body_bytes` must be `0`.
+- Response disclosure is a constrained schema, not a list of top-level
+  names. Objects cannot be selected wholesale; every nested value needs an
+  explicit leaf path, type, and applicable string/array bound.
+- Unknown fields are rejected at load.
 
 ## Request format (JSON)
 
@@ -63,27 +80,42 @@ Unknown fields are rejected at load.
   "credential": "MY_API_KEY",
   "method": "GET",
   "url": "https://api.example.com/v1/status",
-  "ts": 1735689600
+  "timestamp": 1735689600,
+  "nonce": "01J0000000000000000000000"
 }
 ```
 
-- `ts` must be within ±500 seconds of current time
-- `url` must be `https://` (or `http://` for loopback grants only)
-- No `headers` field allowed (headers come from policy)
-- `body` only allowed for POST when `allow_body: true`
+- `timestamp` must be within ±300 seconds of current time. There is no
+  cross-call replay cache.
+- `url` must use lowercase `http` or `https`.
+- URLs must not contain query strings, fragments, embedded credentials,
+  backslashes, percent-encoded bytes, or dot segments.
+- No `headers` or `body` field is allowed. `body` is an unknown field and
+  is rejected.
 
 ## Security properties
 
 | Property | Mechanism |
 |----------|-----------|
 | Default deny | Every field must match; no wildcards |
-| SSRF prevention | DNS resolution + IP filter before connect |
-| No redirects | `max_redirects(0)` |
+| SSRF prevention | DNS answer is fully validated, then pinned for the connection |
+| No redirects | `max_redirects(0)`; 3xx responses are denied, not followed |
 | No proxy | `proxy(None)` explicitly |
-| Response minimization | Allowlist filter; unknown fields dropped |
-| Audit trail | Redacted JSONL; no bodies, secrets, or headers |
+| Response minimization | Constrained response schema; nested objects are never copied wholesale |
+| Audit trail | Intent before network, completion afterward; redacted JSONL |
 | Credential isolation | Value never leaves broker process |
-| Fail-closed | Audit-write failure denies operation |
+| Fail-closed | Missing intent audit prevents the request; completion-audit failure reports a possible side effect |
+
+## Policy trust boundary
+
+`--policy` is trusted-operator input, not agent input. The broker process
+cannot distinguish an operator shell from an agent process running as the
+same user. Therefore, direct invocation by an untrusted agent is
+unsupported: a trusted operator or launcher must select the policy file and
+supply the master password. Permitting an untrusted agent to choose
+`--policy` would let it substitute a permissive policy. The supported
+deployment options are recorded in
+`docs/privacy-station/policy-trust-boundary.md`.
 
 ## Audit format
 

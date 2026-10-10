@@ -1,5 +1,58 @@
 # PROGRESS.md — session evidence log
 
+## PS-01 remediation — DONE except unresolved policy-trust approval (2026-10-10)
+
+Commit `bc4867b` on `privacy-station/proposal` (plus this PROGRESS/PLAN update).
+
+### What changed
+- DNS/SSRF: injectable DNS, IPv4-mapped/transition filtering, mixed-answer
+  rejection, and a pinned ureq resolver preserving hostname TLS/SNI
+  (`src/broker/http.rs`).
+- Responses: constrained leaf-path schema with scalar/array bounds; nested
+  objects rebuilt leaf-by-leaf (`src/broker/policy.rs`, `respond.rs`).
+- Tests: valid baselines; real broker-process redirect/proxy/oversized/
+  credential-leak/audit-intent tests against local servers and temp vaults
+  (`tests/broker.rs`).
+- Policy/request: segment path scopes, URL query/fragment/credential/
+  encoding/dot-segment rejection, GET/POST-only policies, reserved-header
+  denylist, disabled v1 bodies, bounded file/password reads.
+- Audit: intent before network, completion afterward with possible-side-
+  effect wording, no CWD fallback, symlink/regular-file checks, field and
+  log-size bounds.
+- Docs/decisions: JSON deviation recorded; policy-trust-boundary model and
+  single batched PS-02 approval in `DECISIONS.md`.
+- CI: broker integration tests run; default tree checked for HTTP deps;
+  MSRV check covers all features.
+- Deps: pinned `idna_adapter 1.2.1`, `icu_* 2.1.x` for rustc 1.85 MSRV.
+
+### Gates/commands (exact outcomes)
+- `cargo fmt --check` — PASS.
+- `cargo clippy --locked --all-targets --all-features -- -D warnings` — PASS.
+- `cargo test --locked` — PASS (lib 75, cli 41, disaster 3, security 15,
+  vault 1, broker file compiles to 0 tests without the feature).
+- `cargo test --locked --test broker` — 0 tests (confirms gate without
+  `broker-http`; not coverage).
+- `cargo test --locked --features broker-http --test broker` — 27 PASS.
+- `cargo test --locked --all-features` — PASS (lib 86, broker 27, cli 41,
+  disaster 3, security 15, vault 1).
+- `cargo +1.85 check --locked --all-targets --all-features` — PASS after
+  dependency pins (initial failure on icu 2.3/rustc-1.88 requirements).
+- `cargo build --locked --bin sagitarrius` — PASS (no `broker-http`).
+- `cargo tree --locked -e normal` — no `ureq`/`url`/`hyper`/`reqwest`.
+  Note: the requested `cargo tree -e normal --bin sagitarrius` form is not
+  supported by installed cargo (`cargo tree` has no `--bin` selector).
+- `cargo audit` — NOT RUN locally (`cargo-audit` not installed); CI still
+  installs/runs it.
+- Unix-only `audit_completion_failure_reports_possible_side_effect` —
+  NOT RUN on Windows; construction is covered by code path and Linux CI.
+
+### Known limits
+- Disk filled once during `cargo test --locked` (`target` cleaned; rerun
+  passed). Free space remains low (~1 GB).
+- `cargo test --locked` first attempt failed on OS error 112; evidence
+  above is from the clean rerun.
+- Policy-trust boundary remains unresolved (see `DECISIONS.md` PS-02).
+
 ## PS-01 MVP broker — DONE (2026-10-10)
 
 Commit `5ad2387` on `privacy-station/proposal`. 18 files, +2769/-27.

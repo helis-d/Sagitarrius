@@ -18,30 +18,42 @@ broker attaches it as an HTTP header internally; it is zeroized after use.
 credential, method, host, and path. Unknown fields rejected.
 
 ### T3: SSRF — agent targets internal services
-**Mitigation**: DNS resolution + IP filter before connect. Private,
-link-local, loopback (without opt-in), and metadata addresses denied.
+**Mitigation**: Every DNS answer is validated, including IPv4-mapped IPv6
+and transition addresses. Private, link-local, special-use, multicast,
+unspecified, and metadata addresses are denied. Loopback requires an
+explicit grant opt-in, and mixed loopback/public answers are rejected.
 
 ### T4: DNS rebinding
-**Mitigation**: Resolve-then-check before connecting. Race window
-documented as not guaranteed.
+**Mitigation**: Validation returns the accepted socket addresses and the
+request uses a pinned resolver containing only those addresses. The HTTP
+client does not perform a second DNS lookup for the approved hostname.
+Hostname-based TLS verification and SNI still use the original hostname.
+A hostname answer with too many addresses fails closed.
 
 ### T5: Redirect to internal service
-**Mitigation**: `max_redirects(0)`. Redirects are denied.
+**Mitigation**: `max_redirects(0)`. A 3xx response is classified as
+`redirect denied`; it is never followed and its body is never returned.
 
 ### T6: Proxy exfiltration
 **Mitigation**: `proxy(None)` explicitly. Proxy env vars ignored.
 
 ### T7: Response contains secrets
-**Mitigation**: Allowlist filter. Only explicitly allowed top-level fields
-are returned. Unknown fields dropped.
+**Mitigation**: Constrained response schema. Only explicitly allowed leaf
+paths with explicitly allowed scalar types and bounds are returned. Nested
+objects are rebuilt leaf-by-leaf and are never copied wholesale. Unknown
+fields are dropped. An allowed string field can still disclose whatever the
+upstream server puts there; the schema does not claim to detect arbitrary
+secrets by string comparison.
 
 ### T8: Audit log contains secrets
 **Mitigation**: Redacted JSONL. No bodies, headers, passwords, or
-credential values. Credential NAME only.
+credential values. Credential NAME only. Metadata fields and total log size
+are bounded.
 
 ### T9: Agent floods audit log
-**Mitigation**: Audit events are append-only with a size cap. Denied
-requests are audited too (they are the interesting ones).
+**Mitigation**: Audit events and the total audit file are append-only with
+size caps. Authorization denials are audited where a bounded event can be
+written.
 
 ### T10: Timestamp replay
 **Mitigation**: ±500 second window. Stale requests rejected.
@@ -50,8 +62,18 @@ requests are audited too (they are the interesting ones).
 **Mitigation**: Static error strings only. Upstream errors are redacted
 through a static mapping.
 
+### T12: Untrusted agent substitutes its own policy
+**Status**: Not mitigated inside the broker binary. `--policy` is trusted
+operator/launcher input. Direct invocation by an untrusted agent is
+unsupported because the broker cannot distinguish same-user operator and
+agent processes. See `policy-trust-boundary.md`.
+
 ## Out of scope
 
 - Physical access to the operator machine
 - Compromised vault file at rest (mitigated by existing encryption)
 - Side-channel timing attacks on credential comparison
+- Buffers owned by the HTTP/TLS libraries, which are not guaranteed to be
+  zeroized
+- In-window replay of an authorized request (only timestamp freshness is
+  enforced)
